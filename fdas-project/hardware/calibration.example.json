@@ -1,0 +1,22 @@
+{
+  "_comment": "Copy this to calibration.json and fill in real values during on-site setup (Member 1). Do not commit calibration.json itself if it's site-specific.",
+
+  "camera": {
+    "device_index": 0,
+    "resolution": [1920, 1080],
+    "capture_fps": 1
+  },
+
+  "screen_roi": {
+    "_comment": "Pixel box around the FULL text display area (message type + zone/device lines), used by cv/change_detect.py and cv/roi_crop.py. This replaced the old led_region + code_roi -- we now read and classify the whole screen, not just a code next to a colored LED.",
+    "x": 0,
+    "y": 0,
+    "width": 0,
+    "height": 0,
+    "change_threshold": 8.0
+  },
+
+  "debounce": {
+    "required_consecutive_frames": 2
+  }
+}

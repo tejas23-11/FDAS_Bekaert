@@ -1,0 +1,14 @@
+[Unit]
+Description=FDAS Alarm Notification System - watchdog (step 13)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/fdas-project
+ExecStart=/home/pi/fdas-project/venv/bin/python3 -m watchdog.health_monitor
+Restart=on-failure
+RestartSec=5
+User=pi
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=FDAS Alarm Notification System - main pipeline
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/fdas-project
+ExecStart=/home/pi/fdas-project/venv/bin/python3 -m cv.capture
+Restart=on-failure
+RestartSec=5
+User=pi
+
+[Install]
+WantedBy=multi-user.target
