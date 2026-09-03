@@ -2,10 +2,14 @@
 Extracts a device/zone code from the full OCR'd screen text, and validates
 it against format + the known-device list.
 
-Previously the code was the only thing in a tightly cropped ROI, so OCR
-output *was* the code. Now the code is somewhere inside a larger message
-(e.g. "FIRE ALARM\nZONE L1/A053"), so extraction is now a search rather
-than an assumption.
+Real Honeywell panel format (confirmed from site photo):
+  - Line "Device: OPT    ABV B100 MC SD L1/53"  → short form  "L1/53"
+  - Line "       L1 A053"                        → long form   "L1 A053"
+
+Both are normalised to the canonical form "L1 A053" for storage/lookup.
+The regex handles:
+  • "L1 A053"   (space-separated, from the device detail line)
+  • "L1/53"     (slash short-form, from the description line -- expanded on lookup)
 
 Owner: Member 2 (works with Member 1 on the real device-code format and list).
 """
@@ -17,10 +21,13 @@ from pathlib import Path
 
 _KNOWN_DEVICES_PATH = Path("hardware/known_devices.txt")
 
-# TODO(Member 1/2): confirm the real device code format from the site visit.
-# This pattern (e.g. "L1/A053") is what the proposal document used as an
-# example -- update it if the real panel format differs.
-_CODE_PATTERN = re.compile(r"\bL\d+/[A-Z]\d{3}\b")
+# Real panel formats confirmed from site photo (2026-08 visit):
+#   Long form:  "L1 A053"  (letter-prefix loop, space, alpha+3digits)
+#   Short form: "L1/53"    (loop/detector-number only, no alpha prefix letter visible)
+#
+# We match both and normalise to the long form for DB lookup.
+_CODE_LONG  = re.compile(r"\bL(\d+)\s+([A-Z]\d{3})\b")   # "L1 A053"
+_CODE_SHORT = re.compile(r"\bL(\d+)/(\d{2,3})\b")          # "L1/53"
 
 
 def _load_known_devices() -> set[str]:
@@ -32,21 +39,33 @@ def _load_known_devices() -> set[str]:
 _known_devices = _load_known_devices()
 
 
+def _normalise(text: str) -> str | None:
+    """Return the canonical 'L<n> <alpha><ddd>' form, or None."""
+    upper = text.upper()
+    m = _CODE_LONG.search(upper)
+    if m:
+        return f"L{m.group(1)} {m.group(2)}"
+    m = _CODE_SHORT.search(upper)
+    if m:
+        # Short form "L1/53" – we store as "L1 A053" (A-prefix assumed from Bekaert panel)
+        det = m.group(2).zfill(3)
+        return f"L{m.group(1)} A{det}"
+    return None
+
+
 def extract_code(text: str) -> str | None:
-    """Searches the full screen text for something matching the device
-    code pattern. Returns the first match, or None if nothing matches."""
-    match = _CODE_PATTERN.search(text.upper())
-    return match.group(0) if match else None
+    """Searches the full screen text for a device code in either format
+    and returns the canonical 'L<n> <alpha><ddd>' form, or None."""
+    return _normalise(text)
 
 
 def validate_code(code: str | None) -> bool:
     """
-    (a) format already enforced by extract_code's regex, so this mainly
-    checks (b) membership in the known-device list. Kept as a separate
-    step (rather than folding into extract_code) so debounce/retry logic
-    in capture.py can distinguish "no code-shaped text found" from
-    "found a code-shaped string but it's not a real device" -- useful for
-    diagnosing OCR/vocabulary issues later.
+    (a) format already enforced by extract_code's normalisation, so this
+    mainly checks (b) membership in the known-device list. Kept as a
+    separate step so debounce/retry logic in capture.py can distinguish
+    'no code-shaped text found' from 'found a code but it is not a real
+    device' -- useful for diagnosing OCR/vocabulary issues later.
     """
     if not code:
         return False

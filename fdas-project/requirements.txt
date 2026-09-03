@@ -3,8 +3,8 @@ opencv-python-headless==4.10.*
 numpy==1.26.*
 
 # OCR (Member 2)
-paddleocr==2.7.*
-paddlepaddle==2.6.*
+# paddleocr==2.7.*
+# paddlepaddle==2.6.*
 pytesseract==0.3.*         # fallback OCR engine -- currently the *active* engine until
                             # paddleocr is installed; requires the tesseract-ocr system
                             # package too (`apt install tesseract-ocr` on the Pi)
