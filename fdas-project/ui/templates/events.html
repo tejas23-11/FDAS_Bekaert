@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Event History{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Event History</h2>
+    <p>{{ total }} event{{ 's' if total != 1 else '' }} recorded</p>
+</div>
+
+<!-- Filters -->
+<form class="filter-bar" method="GET" action="{{ url_for('events.index') }}">
+    <select name="type" id="filter-type">
+        <option value="">All Types</option>
+        <option value="fire" {{ 'selected' if current_type == 'fire' }}>🔥 Fire</option>
+        <option value="fault" {{ 'selected' if current_type == 'fault' }}>⚠️ Fault</option>
+        <option value="supervisory" {{ 'selected' if current_type == 'supervisory' }}>🔵 Supervisory</option>
+    </select>
+    <select name="status" id="filter-status">
+        <option value="">All Statuses</option>
+        <option value="active" {{ 'selected' if current_status == 'active' }}>Active</option>
+        <option value="resolved" {{ 'selected' if current_status == 'resolved' }}>Resolved</option>
+    </select>
+    <button type="submit" class="btn btn-primary" style="padding: 8px 16px;">Filter</button>
+    {% if current_type or current_status %}
+    <a href="{{ url_for('events.index') }}" class="btn btn-secondary" style="padding: 8px 16px;">Clear</a>
+    {% endif %}
+</form>
+
+<!-- Events Table -->
+{% if events %}
+<div class="table-container">
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Detected At</th>
+                <th>Device Code</th>
+                <th>Location</th>
+                <th>Zone</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>SMS</th>
+                <th>Call</th>
+                <th>Resolved At</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for e in events %}
+            <tr>
+                <td style="font-family: var(--font-mono); color: var(--text-muted);">#{{ e.id }}</td>
+                <td style="font-family: var(--font-mono); font-size: 0.8rem;">
+                    {{ e.detected_at[:19] | replace("T", " ") }}
+                </td>
+                <td style="font-weight: 600; color: var(--text-primary);">{{ e.device_code }}</td>
+                <td>{{ e.location_name or '—' }}</td>
+                <td>{{ e.zone or '—' }}</td>
+                <td><span class="badge badge-{{ e.message_type }}">{{ e.message_type }}</span></td>
+                <td><span class="badge badge-{{ e.status }}">{{ e.status }}</span></td>
+                <td><span class="badge badge-{{ e.sms_status }}">{{ e.sms_status }}</span></td>
+                <td><span class="badge badge-{{ e.call_status }}">{{ e.call_status }}</span></td>
+                <td style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-muted);">
+                    {{ (e.resolved_at[:19] | replace("T", " ")) if e.resolved_at else '—' }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Pagination -->
+{% if total_pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('events.index', type=current_type, status=current_status, page=page-1) }}">← Prev</a>
+    {% endif %}
+
+    {% for p in range(1, total_pages + 1) %}
+        {% if p == page %}
+        <span class="current">{{ p }}</span>
+        {% elif p <= 3 or p > total_pages - 2 or (p >= page - 1 and p <= page + 1) %}
+        <a href="{{ url_for('events.index', type=current_type, status=current_status, page=p) }}">{{ p }}</a>
+        {% elif p == 4 or p == total_pages - 2 %}
+        <span style="border: none; background: none; color: var(--text-muted);">…</span>
+        {% endif %}
+    {% endfor %}
+
+    {% if page < total_pages %}
+    <a href="{{ url_for('events.index', type=current_type, status=current_status, page=page+1) }}">Next →</a>
+    {% endif %}
+</div>
+{% endif %}
+
+{% else %}
+<div class="empty-state">
+    <div class="icon">📭</div>
+    <p>No events match the current filters</p>
+</div>
+{% endif %}
+{% endblock %}

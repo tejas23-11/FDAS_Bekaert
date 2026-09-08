@@ -5,9 +5,11 @@
 ```bash
 sudo cp watchdog/systemd/fdas-pipeline.service /etc/systemd/system/
 sudo cp watchdog/systemd/fdas-watchdog.service /etc/systemd/system/
+sudo cp watchdog/systemd/fdas-ui.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now fdas-pipeline
 sudo systemctl enable --now fdas-watchdog
+sudo systemctl enable --now fdas-ui
 ```
 
 Both services run independently (`Restart=on-failure` on each) so a crash

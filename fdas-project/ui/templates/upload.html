@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Device Map Upload{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Device Map Management</h2>
+    <p>Upload a spreadsheet to add or update device-to-location mappings</p>
+</div>
+
+<!-- Upload Summary (shown after a successful upload) -->
+{% if upload_done %}
+    {% if errors %}
+    <div class="upload-summary has-errors">
+        <h3>Upload Complete — {{ updated }} device(s) updated, {{ errors|length }} row(s) skipped</h3>
+        <ul>
+            {% for err in errors %}
+            <li>{{ err }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% else %}
+    <div class="upload-summary success">
+        <h3>✅ Upload Complete — {{ updated }} device(s) updated</h3>
+    </div>
+    {% endif %}
+{% endif %}
+
+<!-- Upload Zone -->
+<div class="card" style="margin-bottom: 28px;">
+    <div class="card-header">
+        <span class="card-title">Upload Device Map</span>
+        <a href="{{ url_for('upload.download_template') }}" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.8rem;">
+            📥 Download Template
+        </a>
+    </div>
+    <form method="POST" action="{{ url_for('upload.upload') }}" enctype="multipart/form-data">
+        <label class="upload-zone" for="file-input" id="upload-dropzone">
+            <div class="icon">📄</div>
+            <p>Click to select a <strong>.xlsx</strong> file</p>
+            <p class="hint">Required columns: device_code, location_name, zone, device_type, contacts</p>
+            <input type="file" name="file" id="file-input" accept=".xlsx"
+                   style="display: none;"
+                   onchange="document.getElementById('file-name').textContent = this.files[0]?.name || ''; document.getElementById('upload-btn').style.display = 'inline-flex';">
+        </label>
+        <div style="margin-top: 16px; display: flex; align-items: center; gap: 12px;">
+            <span id="file-name" style="color: var(--text-secondary); font-size: 0.85rem;"></span>
+            <button type="submit" id="upload-btn" class="btn btn-primary" style="display: none;">
+                Upload & Apply
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- Current Device Map -->
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">Current Device Map</span>
+        <span class="card-subtitle">{{ devices|length }} device(s)</span>
+    </div>
+
+    {% if devices %}
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Device Code</th>
+                    <th>Location</th>
+                    <th>Zone</th>
+                    <th>Type</th>
+                    <th>Contacts</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for d in devices %}
+                <tr>
+                    <td style="font-weight: 600; color: var(--text-primary); font-family: var(--font-mono);">{{ d.device_code }}</td>
+                    <td>{{ d.location_name }}</td>
+                    <td>{{ d.zone }}</td>
+                    <td>{{ d.device_type }}</td>
+                    <td style="font-family: var(--font-mono); font-size: 0.8rem;">{{ d.contacts }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <div class="icon">📋</div>
+        <p>No devices mapped yet — upload a spreadsheet to get started</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

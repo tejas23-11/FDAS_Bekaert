@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block head_extra %}
+<meta http-equiv="refresh" content="10">
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>System Dashboard</h2>
+    <p>Live health status and recent activity</p>
+</div>
+
+<!-- Health Banner -->
+{% if banner == "healthy" %}
+<div class="health-banner healthy">
+    <span class="icon">✅</span>
+    <div>
+        <div>All Systems Normal</div>
+        <div class="detail">{{ banner_detail }}</div>
+    </div>
+</div>
+{% elif banner == "fault" %}
+<div class="health-banner fault">
+    <span class="icon">🚨</span>
+    <div>
+        <div>System Fault Detected</div>
+        <div class="detail">{{ banner_detail }}</div>
+    </div>
+</div>
+{% else %}
+<div class="health-banner unknown">
+    <span class="icon">⚠️</span>
+    <div>
+        <div>Health Status Unknown</div>
+        <div class="detail">{{ banner_detail }}</div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Individual Health Cards -->
+{% if health_checks %}
+<div class="health-grid">
+    {% for check in health_checks %}
+    <div class="health-card">
+        <div class="indicator {{ check.status }}"></div>
+        <div class="info">
+            <div class="check-name">{{ check.check_name }}</div>
+            <div class="check-time">{{ check.checked_at[:19] | replace("T", " ") }}</div>
+            {% if check.detail %}
+            <div class="check-time" style="color: var(--red);">{{ check.detail }}</div>
+            {% endif %}
+        </div>
+        <span class="badge badge-{{ check.status }}">{{ check.status }}</span>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- Recent Events -->
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">Recent Events</span>
+        <a href="{{ url_for('events.index') }}" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.8rem;">
+            View All →
+        </a>
+    </div>
+
+    {% if recent_events %}
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Device</th>
+                    <th>Location</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>SMS</th>
+                    <th>Call</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for e in recent_events %}
+                <tr>
+                    <td style="font-family: var(--font-mono); font-size: 0.8rem;">
+                        {{ e.detected_at[:19] | replace("T", " ") }}
+                    </td>
+                    <td style="font-weight: 600; color: var(--text-primary);">{{ e.device_code }}</td>
+                    <td>{{ e.location_name or '—' }}</td>
+                    <td><span class="badge badge-{{ e.message_type }}">{{ e.message_type }}</span></td>
+                    <td><span class="badge badge-{{ e.status }}">{{ e.status }}</span></td>
+                    <td><span class="badge badge-{{ e.sms_status }}">{{ e.sms_status }}</span></td>
+                    <td><span class="badge badge-{{ e.call_status }}">{{ e.call_status }}</span></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <div class="icon">📭</div>
+        <p>No events recorded yet</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

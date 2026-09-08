@@ -26,3 +26,7 @@ psutil==6.*
 
 # Testing (Member 6)
 pytest==8.*
+
+# UI — Operator Dashboard (step 14)
+flask==3.1.*
+openpyxl==3.1.*
