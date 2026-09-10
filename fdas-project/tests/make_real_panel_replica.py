@@ -4,6 +4,8 @@ observed at the Bekaert site (2026-08 / 2026-09).
 
 Image 1: L1 A053 / OPT  (optical detector, Server Room)
 Image 2: L2 A138 / MCP  (manual call point, Utility Room BD)  ← new
+Image 3: L1 A053 / OPT  (optical detector, Server Room)
+
 
 Run:
     python3 -m tests.make_real_panel_replica
