@@ -29,32 +29,33 @@ def preprocess_lcd_panel(roi):
     Specialized preprocessing for blue-backlit LCD panels (e.g. the Honeywell
     fire alarm panel at the Bekaert site).
 
-    The panel display has WHITE TEXT on a BLUE BACKGROUND. Standard
-    grayscale preprocessing gives poor results on blue-dominant images
-    because it reduces blue-channel contrast. This function instead:
-      1. Extracts the Blue channel from BGR (where white text has highest value)
-      2. Inverts the channel so text becomes dark on white background
-      3. Upscales the image 2x for better Tesseract character recognition
-      4. Applies CLAHE for local contrast normalization
-      5. Applies adaptive thresholding for clean binary image output
+    The panel display has WHITE TEXT on a BLUE BACKGROUND.
+    Contrast analysis per BGR channel:
+      - Blue  channel (index 0): background=HIGH,      text=HIGH  -> no contrast (WRONG!)
+      - Green channel (index 1): background=LOW-MED,   text=HIGH  -> good contrast
+      - Red   channel (index 2): background=VERY LOW,  text=HIGH  -> BEST contrast (use this!)
 
-    Use this function instead of preprocess_for_ocr() when reading real
-    panel camera images from the Honeywell LCD display.
+    White text  (R=255, G=255, B=255) -> Red channel = 255 (bright)
+    Blue bg     (R~15,  G~40,  B~200) -> Red channel = 15  (very dark)
+    This maximises the text/background separation for Tesseract.
+
+    Steps:
+      1. Extract RED channel (BGR index 2)
+      2. Upscale 2x so Tesseract can read small LCD character fonts
+      3. CLAHE for local contrast normalisation
+      4. Adaptive threshold -> clean binary (dark text on white)
     """
-    # Step 1: Extract BLUE channel only (white text appears brightest in blue channel)
-    blue_channel = roi[:, :, 0]   # OpenCV BGR ordering: index 0 = Blue channel
+    # Step 1: Red channel gives max contrast: text bright, blue bg very dark
+    red_channel = roi[:, :, 2]   # BGR index 2 = Red
 
-    # Step 2: Invert the channel so white text becomes dark (black text on white)
-    inverted = cv2.bitwise_not(blue_channel)
+    # Step 2: Upscale 2x -- LCD fonts are small, Tesseract reads them better larger
+    upscaled = cv2.resize(red_channel, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
 
-    # Step 3: Upscale 2x for better Tesseract character recognition on small LCD fonts
-    upscaled = cv2.resize(inverted, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-
-    # Step 4: CLAHE for local contrast normalization
+    # Step 3: CLAHE normalises local brightness variation (e.g. glare from display)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     contrast = clahe.apply(upscaled)
 
-    # Step 5: Adaptive threshold -- produces clean black text on white background
+    # Step 4: Adaptive threshold -> Tesseract expects dark text on white background
     binary = cv2.adaptiveThreshold(
         contrast, 255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
