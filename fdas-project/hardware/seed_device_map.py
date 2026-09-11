@@ -27,6 +27,13 @@ _DEVICES = [
         "contacts":      ["+1234567890", "+0987654321"],
     },
     {
+        "device_code":   "L1 A064",
+        "location_name": "MZ IN NB MD - Zone 1",
+        "zone":          "Zone 1",
+        "device_type":   "OPT (optical smoke detector)",
+        "contacts":      ["+1234567890", "+0987654321"],
+    },
+    {
         "device_code":   "L2 A138",
         "location_name": "Utility Room - BD - Zone 1",
         "zone":          "Zone 1",

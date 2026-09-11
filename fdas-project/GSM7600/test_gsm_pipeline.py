@@ -328,6 +328,9 @@ if __name__ == "__main__":
         # Determine which image to use
         if args.image:
             test_img = Path(args.image)
+        elif Path("GSM7600/WhatsApp Image 2026-09-11 at 2.14.24 PM.jpeg").exists():
+            test_img = Path("GSM7600/WhatsApp Image 2026-09-11 at 2.14.24 PM.jpeg")
+            print("[INFO] Using latest panel image: GSM7600/WhatsApp Image 2026-09-11 at 2.14.24 PM.jpeg")
         elif Path("GSM7600/WhatsApp Image 2026-09-11 at 2.08.53 PM.jpeg").exists():
             test_img = Path("GSM7600/WhatsApp Image 2026-09-11 at 2.08.53 PM.jpeg")
             print("[INFO] Using panel image: GSM7600/WhatsApp Image 2026-09-11 at 2.08.53 PM.jpeg")
@@ -337,10 +340,13 @@ if __name__ == "__main__":
         else:
             test_img = DEFAULT_SAMPLE_IMAGE
 
-        # Auto-apply tight LCD ROI for WhatsApp panel photo if no custom ROI provided
+        # Auto-apply tight LCD ROI presets for WhatsApp panel photos if no custom ROI provided
         if roi_tuple is None and "WhatsApp Image" in test_img.name:
-            roi_tuple = (230, 130, 450, 150)
-            print(f"[INFO] Auto-applied preset tight LCD ROI for WhatsApp panel photo: {roi_tuple}")
+            if "2.14.24" in test_img.name:
+                roi_tuple = (100, 290, 1040, 310)
+            else:
+                roi_tuple = (230, 130, 450, 150)
+            print(f"[INFO] Auto-applied preset tight LCD ROI for panel photo ({test_img.name}): {roi_tuple}")
             args.lcd_mode = True
 
         run_hardware_test(
