@@ -14,6 +14,9 @@ Usage:
 
   # 3. Run against custom panel screenshot image:
   python -m GSM7600.test_gsm_pipeline --image path/to/panel_photo.png --phone +919876543210
+
+  # 4. Skip OCR entirely, force-inject a known FIRE event and dispatch live SMS+Call:
+  python -m GSM7600.test_gsm_pipeline --phone +919876543210 --force-fire
 """
 
 import argparse
@@ -46,6 +49,84 @@ except Exception:
 
 
 DEFAULT_SAMPLE_IMAGE = Path("tests/sample_footage/fire/frame_000.png")
+
+
+def run_forced_fire_test(
+    override_phone: str,
+    dry_run: bool = False,
+    port_override: str = None
+):
+    """
+    Skips OCR entirely. Directly injects a known FIRE event for device L1 A053
+    and dispatches live SMS + Voice Call via SIM7600 hardware.
+    Use this when OCR is not needed (e.g. on-site hardware GSM testing).
+    """
+    print("\n=======================================================")
+    print("      FDAS FORCED FIRE EVENT -> SIM7600 GSM TEST        ")
+    print("=======================================================\n")
+
+    # Step 1: Seed the database
+    print("[1/4] Seeding device map database...")
+    seed_device_map()
+
+    # Step 2: Build a known fire event directly (no OCR needed)
+    print("[2/4] Injecting known FIRE event for device L1 A053...")
+    detected_event = DetectedEvent(
+        device_code="L1 A053",
+        message_type="fire",
+        raw_text="First Fire L1 A053",
+        confidence=1.0
+    )
+
+    # Step 3: Resolve location and contacts from database
+    print("[3/4] Resolving location from database...")
+    resolved_event = resolve_location(detected_event)
+    if not resolved_event:
+        print("[ERROR] Failed to resolve location!")
+        return False
+
+    log_event(resolved_event)
+    target_contacts = [override_phone] if override_phone else resolved_event.contacts
+    primary_caller = override_phone if override_phone else resolved_event.primary_contact
+
+    print(f"      Location: {resolved_event.location_name}")
+    print(f"      SMS Recipients: {target_contacts}")
+    print(f"      Voice Call Target: {primary_caller}")
+
+    # Step 4: Dispatch SMS and Voice Call
+    print(f"\n[4/4] Dispatching GSM Notifications (Dry-Run: {dry_run})...")
+
+    if not dry_run:
+        try:
+            check_modem_health(port_override=port_override)
+        except Exception as err:
+            print(f"[WARN] Modem check warning: {err}")
+
+    sms_text = f"FIRE ALARM: {resolved_event.device_code} at {resolved_event.location_name}. Respond immediately."
+    for number in target_contacts:
+        print(f"\n-> Dispatching SMS to {number}...")
+        sms_ok = send_sms_sim7600(
+            to_number=number,
+            message=sms_text,
+            dry_run=dry_run,
+            port_override=port_override
+        )
+        print(f"   SMS Status: {'SUCCESS' if sms_ok else 'FAILED'}")
+
+    if primary_caller:
+        print(f"\n-> Placing Voice Call to {primary_caller}...")
+        call_ok = place_call_sim7600(
+            primary_contact=primary_caller,
+            ring_duration=12.0,
+            dry_run=dry_run,
+            port_override=port_override
+        )
+        print(f"   Voice Call Status: {'SUCCESS' if call_ok else 'FAILED'}")
+
+    print("\n=======================================================")
+    print("      FORCED FIRE TEST COMPLETE                         ")
+    print("=======================================================\n")
+    return True
 
 
 def run_hardware_test(
@@ -176,21 +257,32 @@ if __name__ == "__main__":
     parser.add_argument("--phone", default=None, help="Override destination phone number for live testing")
     parser.add_argument("--dry-run", action="store_true", help="Run simulation mode without invoking hardware serial")
     parser.add_argument("--port", default=None, help="Explicit serial port override (e.g. /dev/ttyUSB2)")
+    parser.add_argument(
+        "--force-fire",
+        action="store_true",
+        help="Skip OCR entirely. Inject a known FIRE event for L1 A053 and dispatch live SMS+Call immediately."
+    )
     args = parser.parse_args()
-
-    test_img = Path(args.image)
-    if not test_img.exists():
-        # Fallback to replica image if sample footage image missing
-        test_img = Path("tests/real_panel_replica.png")
 
     # Default to dry_run=True if no --phone number provided to prevent unintended dials
     is_dry_run = args.dry_run or (args.phone is None and not args.dry_run)
     if args.phone is None and not args.dry_run:
         print("[INFO] No --phone specified, running in --dry-run mode for safety.")
 
-    run_hardware_test(
-        image_path=test_img,
-        override_phone=args.phone,
-        dry_run=is_dry_run,
-        port_override=args.port
-    )
+    # --force-fire: bypass OCR, directly dispatch SMS+Call for known FIRE event
+    if args.force_fire:
+        run_forced_fire_test(
+            override_phone=args.phone,
+            dry_run=is_dry_run,
+            port_override=args.port
+        )
+    else:
+        test_img = Path(args.image)
+        if not test_img.exists():
+            test_img = Path("tests/real_panel_replica.png")
+        run_hardware_test(
+            image_path=test_img,
+            override_phone=args.phone,
+            dry_run=is_dry_run,
+            port_override=args.port
+        )
