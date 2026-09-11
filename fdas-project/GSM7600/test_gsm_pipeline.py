@@ -6,14 +6,14 @@ GSM SMS alerts and ring-only Voice calls to SIM7600 hardware.
 
 Owner: Member 4 (GSM Hardware Subsystem Lead)
 Usage:
-  # 1. Run in dry-run mode (safe test, prints OCR results & SIM7600 actions):
+  # 1. Dry-run (safe test, prints OCR results & SIM7600 actions):
   python -m GSM7600.test_gsm_pipeline --dry-run
 
-  # 2. Run live test against SIM7600 hardware sending to specific number:
+  # 2. Run against SIM7600 hardware sending to specific number:
   python -m GSM7600.test_gsm_pipeline --phone +919876543210
 
-  # 3. Run against custom panel screenshot image:
-  python -m GSM7600.test_gsm_pipeline --image path/to/panel_photo.png --phone +919876543210
+  # 3. Run against the REAL Honeywell panel photo with correct LCD ROI crop:
+  python -m GSM7600.test_gsm_pipeline --image GSM7600/real_panel.jpg.jpeg --phone +919876543210 --roi 230,115,740,270 --lcd-mode
 
   # 4. Skip OCR entirely, force-inject a known FIRE event and dispatch live SMS+Call:
   python -m GSM7600.test_gsm_pipeline --phone +919876543210 --force-fire
@@ -26,7 +26,7 @@ import cv2
 
 # Project pipeline imports
 from cv.roi_crop import crop_screen_region
-from cv.preprocess import preprocess_for_ocr
+from cv.preprocess import preprocess_for_ocr, preprocess_lcd_panel
 from cv.ocr import read_screen_text
 from cv.classify import classify_message
 from cv.validate import extract_code, validate_code
@@ -133,10 +133,18 @@ def run_hardware_test(
     image_path: Path,
     override_phone: str = None,
     dry_run: bool = True,
-    port_override: str = None
+    port_override: str = None,
+    roi_override: tuple = None,
+    lcd_mode: bool = False,
 ):
     """
     Executes end-to-end OCR extraction and SIM7600 hardware dispatch test.
+
+    Args:
+        roi_override: Optional (x, y, w, h) tuple to crop just the LCD screen area.
+                      If None, uses calibration config or full image.
+        lcd_mode: If True, uses preprocess_lcd_panel() optimized for blue-backlit
+                  Honeywell LCD panels instead of generic grayscale preprocessing.
     """
     print("\n=======================================================")
     print("      FDAS OCR -> SIM7600 GSM HARDWARE TEST HARNESS     ")
@@ -160,15 +168,30 @@ def run_hardware_test(
     # Step 3: Run Computer Vision & OCR pipeline
     print("[3/6] Running ROI cropping, preprocessing & OCR...")
     h_img, w_img = frame.shape[:2]
-    roi_config = dict(DEFAULT_CALIBRATION["screen_roi"])
-    if roi_config.get("width", 0) <= 0 or roi_config.get("height", 0) <= 0:
-        roi_config["x"] = 0
-        roi_config["y"] = 0
-        roi_config["width"] = w_img
-        roi_config["height"] = h_img
+
+    # Use --roi override if provided, else calibration config, else full image
+    if roi_override:
+        roi_config = {"x": roi_override[0], "y": roi_override[1],
+                      "width": roi_override[2], "height": roi_override[3]}
+        print(f"      Using custom ROI: x={roi_override[0]}, y={roi_override[1]}, "
+              f"w={roi_override[2]}, h={roi_override[3]}")
+    else:
+        roi_config = dict(DEFAULT_CALIBRATION["screen_roi"])
+        if roi_config.get("width", 0) <= 0 or roi_config.get("height", 0) <= 0:
+            roi_config["x"] = 0
+            roi_config["y"] = 0
+            roi_config["width"] = w_img
+            roi_config["height"] = h_img
 
     roi = crop_screen_region(frame, roi_config)
-    clean_image = preprocess_for_ocr(roi)
+
+    # Use LCD-specific preprocessing if --lcd-mode is set (blue-backlit panels)
+    if lcd_mode:
+        print("      Using LCD blue-channel preprocessing (--lcd-mode)...")
+        clean_image = preprocess_lcd_panel(roi)
+    else:
+        clean_image = preprocess_for_ocr(roi)
+
     ocr_text, confidence = read_screen_text(clean_image)
 
     print(f"      OCR Raw Output Text:\n      --------------------\n      {ocr_text.replace(chr(10), ' | ')}")
@@ -253,7 +276,7 @@ def run_hardware_test(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FDAS OCR-to-GSM Hardware Test Runner")
-    parser.add_argument("--image", default=str(DEFAULT_SAMPLE_IMAGE), help="Path to panel test image")
+    parser.add_argument("--image", default=None, help="Path to panel test image")
     parser.add_argument("--phone", default=None, help="Override destination phone number for live testing")
     parser.add_argument("--dry-run", action="store_true", help="Run simulation mode without invoking hardware serial")
     parser.add_argument("--port", default=None, help="Explicit serial port override (e.g. /dev/ttyUSB2)")
@@ -262,12 +285,37 @@ if __name__ == "__main__":
         action="store_true",
         help="Skip OCR entirely. Inject a known FIRE event for L1 A053 and dispatch live SMS+Call immediately."
     )
+    parser.add_argument(
+        "--roi",
+        default=None,
+        help="LCD screen crop region as x,y,w,h pixel coordinates (e.g. 230,115,740,270). "
+             "Use this to crop just the blue LCD area from the real panel photo."
+    )
+    parser.add_argument(
+        "--lcd-mode",
+        action="store_true",
+        help="Use blue-channel LCD preprocessing instead of standard grayscale. "
+             "Required for real Honeywell panel photos with blue backlit display."
+    )
     args = parser.parse_args()
 
     # Default to dry_run=True if no --phone number provided to prevent unintended dials
     is_dry_run = args.dry_run or (args.phone is None and not args.dry_run)
     if args.phone is None and not args.dry_run:
         print("[INFO] No --phone specified, running in --dry-run mode for safety.")
+
+    # Parse --roi argument into tuple if provided
+    roi_tuple = None
+    if args.roi:
+        try:
+            parts = [int(v.strip()) for v in args.roi.split(",")]
+            if len(parts) != 4:
+                raise ValueError("ROI must be exactly 4 values: x,y,w,h")
+            roi_tuple = tuple(parts)
+            print(f"[INFO] Using custom ROI: x={roi_tuple[0]}, y={roi_tuple[1]}, w={roi_tuple[2]}, h={roi_tuple[3]}")
+        except ValueError as e:
+            print(f"[ERROR] Invalid --roi format: {e}. Expected: x,y,w,h (e.g. 230,115,740,270)")
+            exit(1)
 
     # --force-fire: bypass OCR, directly dispatch SMS+Call for known FIRE event
     if args.force_fire:
@@ -277,12 +325,23 @@ if __name__ == "__main__":
             port_override=args.port
         )
     else:
-        test_img = Path(args.image)
-        if not test_img.exists():
+        # Determine which image to use
+        if args.image:
+            test_img = Path(args.image)
+        elif Path("GSM7600/real_panel.jpg.jpeg").exists():
+            test_img = Path("GSM7600/real_panel.jpg.jpeg")
+            print("[INFO] Using real panel image: GSM7600/real_panel.jpg.jpeg")
+        elif Path("tests/real_panel_replica.png").exists():
             test_img = Path("tests/real_panel_replica.png")
+        else:
+            test_img = DEFAULT_SAMPLE_IMAGE
+
         run_hardware_test(
             image_path=test_img,
             override_phone=args.phone,
             dry_run=is_dry_run,
-            port_override=args.port
+            port_override=args.port,
+            roi_override=roi_tuple,
+            lcd_mode=args.lcd_mode,
         )
+
