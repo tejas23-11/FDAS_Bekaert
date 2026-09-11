@@ -70,11 +70,11 @@ def run_forced_fire_test(
     seed_device_map()
 
     # Step 2: Build a known fire event directly (no OCR needed)
-    print("[2/4] Injecting known FIRE event for device L1 A053...")
+    print("[2/4] Injecting known FIRE event for device L2 A138...")
     detected_event = DetectedEvent(
-        device_code="L1 A053",
+        device_code="L2 A138",
         message_type="fire",
-        raw_text="First Fire L1 A053",
+        raw_text="First Fire L2 A138",
         confidence=1.0
     )
 
@@ -314,7 +314,7 @@ if __name__ == "__main__":
             roi_tuple = tuple(parts)
             print(f"[INFO] Using custom ROI: x={roi_tuple[0]}, y={roi_tuple[1]}, w={roi_tuple[2]}, h={roi_tuple[3]}")
         except ValueError as e:
-            print(f"[ERROR] Invalid --roi format: {e}. Expected: x,y,w,h (e.g. 230,115,740,270)")
+            print(f"[ERROR] Invalid --roi format: {e}. Expected: x,y,w,h (e.g. 230,130,450,150)")
             exit(1)
 
     # --force-fire: bypass OCR, directly dispatch SMS+Call for known FIRE event
@@ -328,13 +328,20 @@ if __name__ == "__main__":
         # Determine which image to use
         if args.image:
             test_img = Path(args.image)
+        elif Path("GSM7600/WhatsApp Image 2026-09-11 at 2.08.53 PM.jpeg").exists():
+            test_img = Path("GSM7600/WhatsApp Image 2026-09-11 at 2.08.53 PM.jpeg")
+            print("[INFO] Using panel image: GSM7600/WhatsApp Image 2026-09-11 at 2.08.53 PM.jpeg")
         elif Path("GSM7600/real_panel.jpg.jpeg").exists():
             test_img = Path("GSM7600/real_panel.jpg.jpeg")
             print("[INFO] Using real panel image: GSM7600/real_panel.jpg.jpeg")
-        elif Path("tests/real_panel_replica.png").exists():
-            test_img = Path("tests/real_panel_replica.png")
         else:
             test_img = DEFAULT_SAMPLE_IMAGE
+
+        # Auto-apply tight LCD ROI for WhatsApp panel photo if no custom ROI provided
+        if roi_tuple is None and "WhatsApp Image" in test_img.name:
+            roi_tuple = (230, 130, 450, 150)
+            print(f"[INFO] Auto-applied preset tight LCD ROI for WhatsApp panel photo: {roi_tuple}")
+            args.lcd_mode = True
 
         run_hardware_test(
             image_path=test_img,
