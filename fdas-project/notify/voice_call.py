@@ -7,14 +7,9 @@ from __future__ import annotations
 from backend.db import get_connection
 
 def _serial_port():
-    """
-    TODO(Member 4): open once and reuse across calls rather than
-    reconnecting every dispatch -- placeholder for the real pyserial
-    connection to the SIM7600.
-        import serial
-        return serial.Serial('/dev/ttyUSB2', 115200, timeout=5)
-    """
-    raise NotImplementedError("Wire up the real serial connection to the GSM module here")
+    """Open a serial connection to the SIM7600 GSM module."""
+    from notify.gsm_config import get_serial_connection
+    return get_serial_connection()
 
 def place_call(db_record_id: int, primary_contact: str, dry_run: bool = True) -> bool:
     """
@@ -24,10 +19,26 @@ def place_call(db_record_id: int, primary_contact: str, dry_run: bool = True) ->
         print(f"[notify:DRY-RUN] CALL -> {primary_contact} (ring-only)")
         status = "placed"
     else:
-        # Real implementation sketch:
-        # ser = _serial_port()
-        # ser.write(f'ATD{primary_contact};\\r'.encode())
-        raise NotImplementedError("Wire up real AT-command voice call here")
+        import time
+        ser = _serial_port()
+        try:
+            # Dial the number (semicolon = voice call)
+            ser.write(f'ATD{primary_contact};\r'.encode())
+            time.sleep(1)
+            response = ser.read(ser.in_waiting).decode(errors='replace')
+            print(f"[notify] Calling {primary_contact}: {response.strip()}")
+
+            # Let it ring, then hang up
+            from notify.gsm_config import CALL_RING_SECONDS
+            time.sleep(CALL_RING_SECONDS)
+            ser.write(b'ATH\r')  # Hang up
+            time.sleep(1)
+            status = "placed"
+        except Exception as e:
+            print(f"[notify] Call error to {primary_contact}: {e}")
+            status = "failed"
+        finally:
+            ser.close()
 
     conn = get_connection()
     conn.execute(

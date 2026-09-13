@@ -22,14 +22,9 @@ _MESSAGE_TEMPLATES = {
 
 
 def _serial_port():
-    """
-    TODO(Member 4): open once and reuse across calls rather than
-    reconnecting every dispatch -- placeholder for the real pyserial
-    connection to the SIM7600.
-        import serial
-        return serial.Serial('/dev/ttyUSB2', 115200, timeout=5)
-    """
-    raise NotImplementedError("Wire up the real serial connection to the GSM module here")
+    """Open a serial connection to the SIM7600 GSM module."""
+    from notify.gsm_config import get_serial_connection
+    return get_serial_connection()
 
 
 def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
@@ -38,9 +33,9 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
 
     Real implementation sketch (SIM7600, text mode):
         ser = _serial_port()
-        ser.write(b'AT+CMGF=1\\r')                        # text mode
-        ser.write(f'AT+CMGS="{to_number}"\\r'.encode())
-        ser.write(message.encode() + b"\\x1A")             # Ctrl+Z sends
+        ser.write(b'AT+CMGF=1\r')                        # text mode
+        ser.write(f'AT+CMGS="{to_number}"\r'.encode())
+        ser.write(message.encode() + b"\x1A")             # Ctrl+Z sends
 
     dry_run=True (default) just logs what would have been sent, so the
     full pipeline is testable without hardware or a live SIM.
@@ -49,7 +44,35 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
         print(f"[notify:DRY-RUN] SMS -> {to_number}: {message}")
         return True
 
-    raise NotImplementedError("Wire up real AT-command SMS sending here")
+    import time
+    ser = _serial_port()
+    try:
+        # Set text mode
+        ser.write(b'AT+CMGF=1\r')
+        time.sleep(0.5)
+        ser.read(ser.in_waiting)  # flush response
+
+        # Set recipient
+        ser.write(f'AT+CMGS="{to_number}"\r'.encode())
+        time.sleep(0.5)
+        ser.read(ser.in_waiting)  # wait for '>' prompt
+
+        # Send message body + Ctrl+Z to transmit
+        ser.write(message.encode() + b"\x1A")
+        time.sleep(3)  # SIM7600 needs a few seconds to send
+
+        response = ser.read(ser.in_waiting).decode(errors='replace')
+        if "+CMGS:" in response:
+            print(f"[notify] SMS sent to {to_number}")
+            return True
+        else:
+            print(f"[notify] SMS failed to {to_number}: {response}")
+            return False
+    except Exception as e:
+        print(f"[notify] SMS error to {to_number}: {e}")
+        return False
+    finally:
+        ser.close()
 
 
 def dispatch(

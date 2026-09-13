@@ -4,6 +4,7 @@ Owner: Member 2
 """
 
 from __future__ import annotations
+# pyrefly: ignore [missing-import]
 import cv2
 import numpy as np
 
