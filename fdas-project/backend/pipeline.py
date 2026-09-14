@@ -48,6 +48,8 @@ def handle_detected_event(event: DetectedEvent, dry_run: bool = False, skip_debo
             message_type=resolved_event.message_type,
             location_name=resolved_event.location_name,
             contacts=resolved_event.contacts,
+            device_type=resolved_event.device_type,
+            zone=resolved_event.zone,
             dry_run=dry_run,
         )
         

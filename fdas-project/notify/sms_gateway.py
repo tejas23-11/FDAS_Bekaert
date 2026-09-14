@@ -15,9 +15,9 @@ MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = [0, 2, 5]  # short for tests/dry-run; lengthen for production
 
 _MESSAGE_TEMPLATES = {
-    "fire": "FIRE ALARM: {code} at {location}. Respond immediately.",
-    "fault": "FDAS FAULT: {code} at {location}. Maintenance check needed.",
-    "supervisory": "FDAS SUPERVISORY: {code} at {location}. Please review.",
+    "fire": "FIRE ALARM: {code} [{device_type}] at {location}, Zone: {zone}. Respond immediately.",
+    "fault": "FDAS FAULT: {code} [{device_type}] at {location}, Zone: {zone}. Maintenance check needed.",
+    "supervisory": "FDAS SUPERVISORY: {code} [{device_type}] at {location}, Zone: {zone}. Please review.",
 }
 
 
@@ -81,6 +81,8 @@ def dispatch(
     message_type: str,
     location_name: str,
     contacts: list[str],
+    device_type: str = "",
+    zone: str = "",
     dry_run: bool = True,
 ) -> bool:
     """
@@ -90,8 +92,8 @@ def dispatch(
     events.sms_status independently of the event record itself (already
     logged before this ever runs).
     """
-    template = _MESSAGE_TEMPLATES.get(message_type, "FDAS ALERT: {code} at {location}.")
-    message = template.format(code=device_code, location=location_name)
+    template = _MESSAGE_TEMPLATES.get(message_type, "FDAS ALERT: {code} [{device_type}] at {location}, Zone: {zone}.")
+    message = template.format(code=device_code, location=location_name, device_type=device_type, zone=zone)
 
     success = False
     attempts = 0
