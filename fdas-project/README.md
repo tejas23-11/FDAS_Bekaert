@@ -26,6 +26,7 @@ cv/         Capture, change detection, OCR, classify, extract code     (Member 2
 backend/    Debounce, dedupe, location lookup, routing, DB + log       (Member 3)
 notify/     SMS dispatch, voice call, resolution tracking              (Member 4)
 watchdog/   Health monitoring + systemd deployment                     (Member 5)
+ui/         Operator dashboard — health, events, device map upload     (Step 14)
 docs/       Proposal, charter, as-built documentation                  (Member 6)
 tests/      Test rig footage, test plans, integration tests            (Member 6)
 ```
@@ -91,10 +92,25 @@ python3 -m unittest discover -s tests -p "test_*.py" -v
 python3 -m cv.capture --source tests/sample_footage/fire --dry-run
 ```
 
-All 34 tests should pass. This exercises real logic end to end — OCR via
+All tests should pass. This exercises real logic end to end — OCR via
 Tesseract, change detection, keyword+fuzzy classification, composite-key
 debounce/dedupe, SQLite logging, message-type routing, and SMS/call
 dispatch in dry-run mode. Nothing here is mocked-out scaffolding.
+
+### Operator Dashboard
+
+```bash
+# 5. Install UI dependencies (already in requirements.txt)
+pip install flask openpyxl
+
+# 6. Generate the device map template spreadsheet
+python -m ui._generate_template
+
+# 7. Start the operator dashboard
+python -m ui.app
+# Visit http://localhost:5000  (default password: fdas)
+# Change the password: python -m ui.auth set-password
+```
 
 ### Swapping in real hardware later
 - **Camera**: point `--source` at a camera index (e.g. `0`) instead of a
@@ -117,6 +133,8 @@ dispatch in dry-run mode. Nothing here is mocked-out scaffolding.
 
 Track progress on the team Kanban board (one column per folder above).
 The core plumbing works end-to-end against synthetic data as of this
-commit, including the new classify/route/call logic. Remaining work per
-module is real-hardware validation, the real panel vocabulary, and the
-`TODO`s left in each file — not building the pipeline from scratch.
+commit, including the new classify/route/call logic. The operator
+dashboard (step 14) is now available — health monitoring, event history,
+and device map upload via a browser-based UI on the local network.
+Remaining work per module is real-hardware validation, the real panel
+vocabulary, and the `TODO`s left in each file.

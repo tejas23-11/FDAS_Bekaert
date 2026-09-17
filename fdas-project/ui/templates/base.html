@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="FDAS Alarm Notification System — Operator Dashboard">
+    <title>{% block title %}Dashboard{% endblock %} — FDAS</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    {% block head_extra %}{% endblock %}
+</head>
+<body>
+    <div class="app-layout">
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <h1>FDAS</h1>
+                <div class="subtitle">Alarm Notification</div>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="{{ url_for('dashboard.index') }}"
+                   class="{% if request.endpoint == 'dashboard.index' %}active{% endif %}">
+                    <span class="nav-icon">📊</span> Dashboard
+                </a>
+                <a href="{{ url_for('events.index') }}"
+                   class="{% if request.endpoint == 'events.index' %}active{% endif %}">
+                    <span class="nav-icon">📋</span> Event History
+                </a>
+                <a href="{{ url_for('upload.index') }}"
+                   class="{% if request.endpoint == 'upload.index' %}active{% endif %}">
+                    <span class="nav-icon">📤</span> Device Map
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <a href="{{ url_for('auth.logout') }}">
+                    <span class="nav-icon">🚪</span> Log Out
+                </a>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% for category, message in messages %}
+                    <div class="flash {{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endwith %}
+
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+</body>
+</html>

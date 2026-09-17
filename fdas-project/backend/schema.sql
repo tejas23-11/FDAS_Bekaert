@@ -31,3 +31,15 @@ CREATE TABLE IF NOT EXISTS device_map (
     device_type     TEXT NOT NULL,
     contacts        TEXT NOT NULL           -- JSON array of phone numbers
 );
+
+-- System-health checks logged by the watchdog (step 14: Operator UI).
+-- The dashboard reads the latest row per check_name to build the status banner.
+CREATE TABLE IF NOT EXISTS system_health (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    check_name   TEXT NOT NULL,             -- 'heartbeat' | 'camera' | 'process'
+    status       TEXT NOT NULL,             -- 'ok' | 'fault'
+    detail       TEXT,                      -- human-readable reason when status='fault'
+    checked_at   TEXT NOT NULL              -- ISO 8601 UTC
+);
+
+CREATE INDEX IF NOT EXISTS idx_health_check ON system_health(check_name, checked_at);

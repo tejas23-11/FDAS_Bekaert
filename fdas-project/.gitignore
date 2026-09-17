@@ -6,3 +6,4 @@ hardware/known_devices.txt
 backend/fdas_events.db
 *.log
 .DS_Store
+ui/config.env

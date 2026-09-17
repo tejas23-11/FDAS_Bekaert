@@ -146,7 +146,8 @@ else:
         try:
             result = subprocess.run(
                 [TESSERACT, tmp_path, "-", "--psm", "6", "-l", "eng"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=30,
             )
             candidate = result.stdout.strip()
             if candidate and len(candidate) > len(text):

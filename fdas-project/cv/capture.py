@@ -22,7 +22,7 @@ import json
 import time
 from pathlib import Path
 from typing import Iterator
-
+# pyrefly: ignore [missing-import]
 import cv2
 import numpy as np
 
