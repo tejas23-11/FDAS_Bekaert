@@ -19,6 +19,8 @@ from __future__ import annotations
 import json, subprocess, sys, tempfile
 from pathlib import Path
 from PIL import Image as PILImage, ImageFilter, ImageOps
+import numpy as np
+import cv2
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 SEP = "=" * 65
@@ -70,22 +72,53 @@ W, H = img.size
 ok("Size", f"{W} x {H}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  STAGE 1 — ROI crop
+#  STAGE 1 — ROI crop (HSV auto-detect, calibration.json fallback)
 # ══════════════════════════════════════════════════════════════════════════════
-hdr("STAGE 1 - ROI crop (calibration.json)")
+hdr("STAGE 1 - ROI crop (HSV blue-LCD auto-detect)")
 calib = json.loads(Path("hardware/calibration.json").read_text())
-roi = calib["screen_roi"]
-ok("screen_roi", roi)
+roi_cfg = calib["screen_roi"]
 
-x, y = roi.get("x", 0), roi.get("y", 0)
-rw = roi.get("width", 0) or W
-rh = roi.get("height", 0) or H
+# Load as OpenCV BGR for HSV auto-detect
+frame_bgr = cv2.imread(str(image_path))
 
-# Clamp to actual image size
-rw = min(rw, W - x)
-rh = min(rh, H - y)
+# Attempt HSV-based blue LCD auto-detection (from cv/roi_crop.py logic)
+_BLUE_LOWER = np.array([100, 80, 60],  dtype=np.uint8)
+_BLUE_UPPER = np.array([130, 255, 255], dtype=np.uint8)
+_BEZEL = 8
 
-cropped = img.crop((x, y, x + rw, y + rh))
+hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+mask = cv2.inRange(hsv, _BLUE_LOWER, _BLUE_UPPER)
+kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel, iterations=2)
+mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+auto_roi = None
+if contours:
+    largest = max(contours, key=cv2.contourArea)
+    img_area = frame_bgr.shape[0] * frame_bgr.shape[1]
+    if cv2.contourArea(largest) >= img_area * 0.05:
+        ax, ay, aw, ah = cv2.boundingRect(largest)
+        ax, ay = ax + _BEZEL, ay + _BEZEL
+        aw, ah = aw - 2*_BEZEL, ah - 2*_BEZEL
+        if aw > 0 and ah > 0:
+            auto_roi = (ax, ay, aw, ah)
+
+if auto_roi:
+    ax, ay, aw, ah = auto_roi
+    cropped_bgr = frame_bgr[ay:ay+ah, ax:ax+aw]
+    # Convert to PIL for consistent downstream handling
+    cropped = PILImage.fromarray(cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB))
+    ok("ROI method", f"HSV auto-detect -> ({ax},{ay}) {aw}x{ah} px")
+else:
+    warn("ROI method", "Auto-detect failed, using calibration.json fallback")
+    x, y = roi_cfg.get("x", 0), roi_cfg.get("y", 0)
+    rw = roi_cfg.get("width", 0) or W
+    rh = roi_cfg.get("height", 0) or H
+    rw, rh = min(rw, W - x), min(rh, H - y)
+    cropped = img.crop((x, y, x + rw, y + rh))
+    ok("ROI method", f"calibration.json -> ({x},{y}) {rw}x{rh} px")
+
 ok("Cropped size", f"{cropped.size[0]} x {cropped.size[1]}")
 
 debug = Path("tests/debug")
@@ -94,20 +127,46 @@ cropped.save(str(debug / "01_roi.png"))
 ok("Saved", "tests/debug/01_roi.png")
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  STAGE 2 — Preprocess
+#  STAGE 2 — Preprocess for blue-backlit LCD
 # ══════════════════════════════════════════════════════════════════════════════
-hdr("STAGE 2 - Preprocess for OCR")
+hdr("STAGE 2 - Preprocess for OCR (blue LCD)")
 
-gray   = ImageOps.grayscale(cropped)
-eq     = ImageOps.equalize(gray)
-sharp  = eq.filter(ImageFilter.SHARPEN)
-binary = sharp.point(lambda p: 255 if p > 128 else 0, '1').convert("L")
-# Invert: Tesseract prefers dark text on light background
+# The Honeywell panel has WHITE text on a BLUE backlit LCD.
+# Standard grayscale conversion collapses all channels and the blue
+# background dominates, making the LCD appear nearly uniform (all white
+# after equalize → threshold, or all black after invert).
+#
+# Fix: extract the RED channel.  On a blue LCD:
+#   - blue background pixels: R≈30, G≈60, B≈255  → red channel is DARK
+#   - white text pixels:      R≈200, G≈200, B≈255 → red channel is BRIGHT
+# This gives excellent contrast between the white text and the blue bg.
+
+r, g, b = cropped.split()
+
+# Upscale 2x -- Tesseract works much better on larger text
+scale = 2
+new_size = (r.width * scale, r.height * scale)
+red_up = r.resize(new_size, PILImage.LANCZOS)
+
+# Threshold: pixels above 120 in red channel = text (white), below = background
+binary = red_up.point(lambda p: 255 if p > 120 else 0, '1').convert("L")
+
+# Invert: Tesseract needs dark text on white background
 inverted = ImageOps.invert(binary)
 
+# Morphological erosion via MinFilter -- removes isolated LED-dot blobs
+# (MinFilter replaces each pixel with the min of its neighbourhood = erode whites)
+# 3x3 kernel at 2x scale is equivalent to ~1.5px erosion on original.
+cleaned = inverted.filter(ImageFilter.MinFilter(3))
+
+# Also prepare a colour upscaled version (useful fallback for Tesseract)
+colour_up = cropped.resize(new_size, PILImage.LANCZOS)
+
 binary.save(str(debug / "02_binary.png"))
-inverted.save(str(debug / "03_inverted.png"))
-ok("Saved", "tests/debug/02_binary.png  +  03_inverted.png")
+cleaned.save(str(debug / "03_inverted.png"))
+colour_up.save(str(debug / "04_colour_upscaled.png"))
+ok("Saved", "tests/debug/02_binary.png + 03_inverted.png (eroded) + 04_colour_upscaled.png")
+ok("Red-channel extraction", f"Scale {scale}x -> {new_size[0]}x{new_size[1]} px (erode to remove LED dots)")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STAGE 3 — OCR (call tesseract.exe directly, NO pytesseract/numpy)
@@ -137,15 +196,21 @@ if TESSERACT is None:
 else:
     ok("Tesseract found", TESSERACT)
 
-    # Try OCR on: (a) original colour crop, (b) inverted binary
-    for label, pil_img in [("colour ROI", cropped), ("inverted binary", inverted)]:
+    # Try OCR with best Tesseract config for LCD pixel fonts:
+    # --oem 1: LSTM engine only (more accurate than legacy on small fonts)
+    # --psm 6: Assume a single uniform block of text (multi-line panel display)
+    # Reference: Tesseract PSM/OEM docs + LCD OCR best-practices research
+    for label, pil_img in [
+        ("inverted binary (red ch, eroded)", cleaned),
+        ("colour upscaled", colour_up),
+    ]:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp_path = tmp.name
             pil_img.save(tmp_path)
 
         try:
             result = subprocess.run(
-                [TESSERACT, tmp_path, "-", "--psm", "6", "-l", "eng"],
+                [TESSERACT, tmp_path, "-", "--oem", "1", "--psm", "6", "-l", "eng"],
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=30,
             )

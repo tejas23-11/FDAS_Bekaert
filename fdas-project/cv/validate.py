@@ -32,8 +32,8 @@ _KNOWN_DEVICES_PATH = Path("hardware/known_devices.txt")
 #   Short form: "L1/53"    (loop/detector-number only, no alpha prefix letter visible)
 #
 # We match both and normalise to the long form for DB lookup.
-_CODE_LONG  = re.compile(r"\bL(\d+)\s+([A-Z]\d{3})\b")   # "L1 A053"
-_CODE_SHORT = re.compile(r"\bL(\d+)/(\d{2,3})\b")          # "L1/53"
+_CODE_LONG  = re.compile(r"\bL(\d+)\s+([A-Z]\d{3})\b")      # "L1 A053"
+_CODE_SHORT = re.compile(r"\bL(\d+)[/\-](\d{2,3})\b")       # "L1/53" or "L1-53" (OCR may read '/' as '-')
 
 
 def _load_known_devices() -> set[str]:
@@ -56,6 +56,7 @@ _LETTER_TO_DIGIT = str.maketrans({
     "s": "5", "S": "5",
     "a": "4",                       # 'a' misread for '4' in LCD fonts
     "b": "6", "B": "8",
+    "e": "6", "E": "6",             # '6' misread as 'e'/'E' on LCD pixel fonts (confirmed real_panel2)
     "g": "9", "q": "9",
     "z": "2", "Z": "2",
     "t": "1", "T": "7",
@@ -99,7 +100,7 @@ def _normalize_ocr_text(text: str) -> str:
             return prefix + fixed
         
         line = re.sub(
-            r'(L\d+[\s/])([A-Za-z][A-Za-z0-9]{1,3})',
+            r'(L\d+[\s/\-])([A-Za-z][A-Za-z0-9]{1,3})',
             fix_code_portion,
             line
         )
