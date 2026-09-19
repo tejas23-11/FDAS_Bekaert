@@ -71,6 +71,123 @@ def _find_tesseract() -> str | None:
     return None
 
 
+# ── PaddleOCR engine (singleton) ──────────────────────────────────────
+_paddle_engine = None
+_paddle_available = None  # None = not checked yet
+
+
+def _get_paddle_engine():
+    """Lazily create PaddleOCR engine (singleton, heavy to init)."""
+    global _paddle_engine, _paddle_available
+    if _paddle_available is False:
+        return None
+    if _paddle_engine is not None:
+        return _paddle_engine
+    try:
+        from paddleocr import PaddleOCR
+        _paddle_engine = PaddleOCR(
+            lang="en",
+            device="cpu",
+            enable_mkldnn=False,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+        )
+        _paddle_available = True
+        return _paddle_engine
+    except ImportError:
+        _paddle_available = False
+        return None
+    except Exception as e:
+        print(f"  [!!] PaddleOCR init failed: {e}")
+        _paddle_available = False
+        return None
+
+
+def _ocr_paddle(image_path: Path, roi, calibration: dict) -> tuple[str, float]:
+    """
+    Run PaddleOCR on the image. Uses the FULL original image (PaddleOCR
+    handles text detection internally and works better on full images).
+    
+    Returns (text, confidence). Raises if PaddleOCR is not available.
+    """
+    engine = _get_paddle_engine()
+    if engine is None:
+        raise RuntimeError("PaddleOCR not installed")
+
+    results = engine.predict(input=str(image_path))
+
+    # Extract text and confidence from PaddleOCR results
+    all_texts = []
+    all_scores = []
+    for result in results:
+        rec_texts = result.get("rec_texts", [])
+        rec_scores = result.get("rec_scores", [])
+        for t, s in zip(rec_texts, rec_scores):
+            t_clean = str(t).strip()
+            if t_clean:
+                all_texts.append(t_clean)
+                all_scores.append(float(s))
+
+    if not all_texts:
+        return "", 0.0
+
+    text = " ".join(all_texts)
+    avg_confidence = sum(all_scores) / len(all_scores) if all_scores else 0.0
+    return text, avg_confidence
+
+
+def _ocr_tesseract(roi) -> tuple[str, float]:
+    """
+    Fallback OCR using Tesseract. Tries colour ROI + inverted binary,
+    keeps whichever produces more text.
+    
+    Returns (text, confidence).
+    """
+    import subprocess
+    import tempfile
+    from PIL import Image as PILImage, ImageFilter, ImageOps
+
+    tesseract_cmd = _find_tesseract()
+    if tesseract_cmd is None:
+        print(f"  [!!] Tesseract not found! Install with: sudo apt install tesseract-ocr")
+        return "", 0.0
+    print(f"  [OK] Tesseract: {tesseract_cmd}")
+
+    # Convert OpenCV BGR to Pillow RGB
+    roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+    pil_colour = PILImage.fromarray(roi_rgb)
+
+    # Pillow-based preprocessing (works well with blue LCD screens)
+    gray = ImageOps.grayscale(pil_colour)
+    eq = ImageOps.equalize(gray)
+    sharp = eq.filter(ImageFilter.SHARPEN)
+    binary = sharp.point(lambda p: 255 if p > 128 else 0, '1').convert("L")
+    pil_inverted = ImageOps.invert(binary)
+
+    text = ""
+    for label, pil_img in [("colour ROI", pil_colour), ("inverted binary", pil_inverted)]:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp_path = tmp.name
+            pil_img.save(tmp_path)
+        try:
+            result = subprocess.run(
+                [tesseract_cmd, tmp_path, "-", "--psm", "6", "-l", "eng"],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=30,
+            )
+            candidate = result.stdout.strip()
+            if candidate and len(candidate) > len(text):
+                text = candidate
+                print(f"  [OK] Tesseract ({label}): {len(text)} chars extracted")
+        except Exception as e:
+            print(f"  [!!] Tesseract ({label}): {e}")
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    return text, 0.5  # Tesseract confidence is unreliable, use 0.5 as placeholder
+
+
 def load_calibration(path: str = "hardware/calibration.json") -> dict:
     """Load calibration config (screen ROI coordinates)."""
     calib_path = Path(path)
@@ -113,55 +230,26 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         roi = crop_screen_region(frame, roi_cfg)
         print(f"  [OK] ROI crop: ({rx},{ry}) {rw}x{rh}")
 
-    # ── Stage 3+4: OCR (dual-attempt — colour ROI + preprocessed) ─────
+    # ── Stage 3+4: OCR (PaddleOCR primary, Tesseract fallback) ─────────
     #
-    # Strategy: try OCR on both the raw colour crop AND a preprocessed
-    # (inverted binary) version, keep whichever produces more text.
-    # This is the same approach that worked in diagnose_real_image.py.
+    # PaddleOCR gives ~96% confidence on LCD panels vs ~23% for Tesseract.
+    # We try PaddleOCR first; if not installed or fails, fall back to
+    # the Tesseract dual-attempt approach.
     text = ""
     confidence = 0.0
 
-    import subprocess
-    import tempfile
-    from PIL import Image as PILImage, ImageFilter, ImageOps
+    paddle_success = False
+    try:
+        text, confidence = _ocr_paddle(image_path, roi, calibration)
+        if text:
+            paddle_success = True
+            print(f"  [OK] PaddleOCR: {len(text)} chars (confidence: {confidence:.3f})")
+    except Exception as e:
+        print(f"  [!!] PaddleOCR failed: {e}")
 
-    # Find tesseract binary
-    tesseract_cmd = _find_tesseract()
-    if tesseract_cmd is None:
-        print(f"  [!!] Tesseract not found! Install with: sudo apt install tesseract-ocr")
-        return False
-    print(f"  [OK] Tesseract: {tesseract_cmd}")
-
-    # Convert OpenCV BGR frame to Pillow RGB for preprocessing
-    roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-    pil_colour = PILImage.fromarray(roi_rgb)
-
-    # Pillow-based preprocessing (works well with blue LCD screens)
-    gray = ImageOps.grayscale(pil_colour)
-    eq = ImageOps.equalize(gray)
-    sharp = eq.filter(ImageFilter.SHARPEN)
-    binary = sharp.point(lambda p: 255 if p > 128 else 0, '1').convert("L")
-    pil_inverted = ImageOps.invert(binary)
-
-    # Try OCR on both versions, keep the longer result
-    for label, pil_img in [("colour ROI", pil_colour), ("inverted binary", pil_inverted)]:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            tmp_path = tmp.name
-            pil_img.save(tmp_path)
-        try:
-            result = subprocess.run(
-                [tesseract_cmd, tmp_path, "-", "--psm", "6", "-l", "eng"],
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=30,
-            )
-            candidate = result.stdout.strip()
-            if candidate and len(candidate) > len(text):
-                text = candidate
-                print(f"  [OK] OCR ({label}): {len(text)} chars extracted")
-        except Exception as e:
-            print(f"  [!!] OCR ({label}): {e}")
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
+    if not paddle_success:
+        print(f"  [..] Falling back to Tesseract...")
+        text, confidence = _ocr_tesseract(roi)
 
     if not text:
         print(f"  [!!] OCR returned empty text — cannot proceed")
@@ -190,19 +278,57 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
 
     # ── Stage 6: Extract & validate device code ──────────────────────
     code = extract_code(text)
+    unknown_device = False
+
     if not code:
         print(f"  [!!] No device code pattern found in OCR text")
-        return False
+        if message_type == "fire":
+            unknown_device = True
+            print(f"  [!!] FIRE detected — sending unknown-device alert")
+        else:
+            return False
 
-    valid = validate_code(code)
-    if not valid:
-        print(f"  [!!] Device code '{code}' not in known_devices.txt — dropping")
-        return False
-    print(f"  [OK] Device code: {code}")
+    if code and not validate_code(code):
+        print(f"  [!!] Device code '{code}' not in known_devices.txt")
+        if message_type == "fire":
+            unknown_device = True
+            print(f"  [!!] FIRE detected — sending unknown-device alert")
+        else:
+            return False
+
+    if not unknown_device:
+        print(f"  [OK] Device code: {code}")
 
     # ── Stage 7: Create event + route through backend ────────────────
     print()
     print(f"  --- BACKEND PIPELINE ---")
+
+    if unknown_device:
+        # Fire detected but device is unknown — send a generic alert SMS
+        from notify.sms_gateway import send_sms
+        from backend.db import get_connection
+
+        contacts = ["+1234567890", "+0987654321"]  # TODO: replace with real contacts
+        unknown_msg = "FIRE detected but at unknown device. Please check the FDAS panel immediately."
+
+        for contact in contacts:
+            send_sms(contact, unknown_msg, dry_run=dry_run)
+
+        # Log to DB as an unknown-device fire event
+        conn = get_connection()
+        conn.execute(
+            "INSERT INTO events (device_code, message_type, raw_text, detected_at, confidence, location_name, sms_status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("UNKNOWN", message_type, text, datetime.now(timezone.utc).isoformat(), confidence, "Unknown device", "sent"),
+        )
+        conn.commit()
+        conn.close()
+        print(f"  [OK] Unknown-device fire event logged to DB")
+
+        print()
+        print(f"  {'DRY-RUN complete' if dry_run else 'LIVE notifications sent'}")
+        print(SEP)
+        return True
+
     event = DetectedEvent(
         device_code=code,
         message_type=message_type,

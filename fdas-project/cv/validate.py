@@ -109,47 +109,7 @@ def _normalize_ocr_text(text: str) -> str:
     return "\n".join(fixed_lines)
 
 
-def _fuzzy_match_device(partial_code: str) -> str | None:
-    """
-    Try to match a partially-correct code against known_devices.
-    
-    For example, if OCR gives 'L1 A114' but the real device is 'L1 A014',
-    find the closest match by comparing digit patterns.
-    """
-    if not _known_devices:
-        return None
-    # Parse the code
-    m = re.match(r"^L(\d+)\s+([A-Z])(\d{1,3})$", partial_code)
-    if not m:
-        return None
-    loop, prefix, num = m.group(1), m.group(2), m.group(3)
-    num = num.zfill(3)
-    
-    # Try exact match first
-    candidate = f"L{loop} {prefix}{num}"
-    if candidate in _known_devices:
-        return candidate
-    
-    # Try with 'A' prefix (all Bekaert devices use A)
-    candidate_a = f"L{loop} A{num}"
-    if candidate_a in _known_devices:
-        if candidate_a != partial_code:
-            print(f"  [OCR-FIX] Corrected '{partial_code}' -> '{candidate_a}' (prefix '{prefix}'->'A')")
-        return candidate_a
-    
-    # Try matching with 1-digit tolerance (e.g., A114 might be A014 or A114)
-    for known in _known_devices:
-        km = re.match(r"^L(\d+)\s+A(\d{3})$", known)
-        if not km or km.group(1) != loop:
-            continue
-        known_num = km.group(2)
-        # Count how many digits differ
-        diffs = sum(1 for a, b in zip(num, known_num) if a != b)
-        if diffs == 1:
-            print(f"  [OCR-FIX] Fuzzy matched '{partial_code}' -> '{known}' (1 digit difference)")
-            return known
-    
-    return None
+
 
 
 def _normalise(text: str) -> str | None:
@@ -225,10 +185,6 @@ def extract_code(text: str) -> str | None:
         corrected = _try_fix_prefix(code)
         if corrected:
             return corrected
-        # Try fuzzy match (1-digit tolerance)
-        fuzzy = _fuzzy_match_device(code)
-        if fuzzy:
-            return fuzzy
     return code
 
 
