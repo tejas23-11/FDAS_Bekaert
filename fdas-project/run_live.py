@@ -77,23 +77,68 @@ _paddle_engine = None
 _paddle_available = None  # None = not checked yet
 
 
+def _is_arm_platform() -> bool:
+    """Detect ARM architecture (Raspberry Pi, etc.)."""
+    import platform
+    machine = platform.machine().lower()
+    return machine.startswith("aarch64") or machine.startswith("arm")
+
+
+def _setup_arm_env():
+    """Set environment variables that prevent PaddlePaddle segfaults on ARM.
+
+    MKL-DNN and aggressive threading cause native C++ crashes on aarch64.
+    These must be set BEFORE importing paddlepaddle / paddleocr.
+    """
+    import os
+    os.environ.setdefault("FLAGS_use_mkldnn", "0")
+    os.environ.setdefault("FLAGS_use_xdnn", "0")
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+
 def _get_paddle_engine():
-    """Lazily create PaddleOCR engine (singleton, heavy to init)."""
+    """Lazily create PaddleOCR engine (singleton, heavy to init).
+
+    On ARM (Raspberry Pi) we apply environment workarounds and use the
+    older, lighter .ocr() API with PP-OCRv3 — the heavy PP-OCRv6 .predict()
+    models are known to segfault on aarch64.
+    """
     global _paddle_engine, _paddle_available
     if _paddle_available is False:
         return None
     if _paddle_engine is not None:
         return _paddle_engine
+
+    is_arm = _is_arm_platform()
+
+    # ARM workaround: set env vars BEFORE importing paddleocr
+    if is_arm:
+        _setup_arm_env()
+        print("  [OK] ARM platform detected — using PaddleOCR with ARM-safe settings")
+
     try:
         from paddleocr import PaddleOCR
-        _paddle_engine = PaddleOCR(
-            lang="en",
-            device="cpu",
-            enable_mkldnn=False,
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-        )
+
+        if is_arm:
+            # On ARM: use older PP-OCRv3 models (lighter, more stable)
+            _paddle_engine = PaddleOCR(
+                use_angle_cls=False,
+                lang="en",
+                use_gpu=False,
+                show_log=False,
+            )
+        else:
+            # On x86: use the newer PP-OCRv6 with .predict() API
+            _paddle_engine = PaddleOCR(
+                lang="en",
+                device="cpu",
+                enable_mkldnn=False,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+            )
         _paddle_available = True
         return _paddle_engine
     except ImportError:
@@ -105,30 +150,52 @@ def _get_paddle_engine():
         return None
 
 
+
+
 def _ocr_paddle(image_path: Path, roi, calibration: dict) -> tuple[str, float]:
     """
     Run PaddleOCR on the image. Uses the FULL original image (PaddleOCR
     handles text detection internally and works better on full images).
-    
+
+    On ARM: uses the older .ocr() API (lighter PP-OCRv3 models).
+    On x86: uses the newer .predict() API (PP-OCRv6 models).
+
     Returns (text, confidence). Raises if PaddleOCR is not available.
     """
     engine = _get_paddle_engine()
     if engine is None:
         raise RuntimeError("PaddleOCR not installed")
 
-    results = engine.predict(input=str(image_path))
-
-    # Extract text and confidence from PaddleOCR results
     all_texts = []
     all_scores = []
-    for result in results:
-        rec_texts = result.get("rec_texts", [])
-        rec_scores = result.get("rec_scores", [])
-        for t, s in zip(rec_texts, rec_scores):
-            t_clean = str(t).strip()
-            if t_clean:
-                all_texts.append(t_clean)
-                all_scores.append(float(s))
+
+    if _is_arm_platform():
+        # ARM path: .ocr() API — returns list of [bbox, (text, score)] per line
+        results = engine.ocr(str(image_path), cls=False)
+        if results:
+            for line_group in results:
+                if line_group is None:
+                    continue
+                for line in line_group:
+                    # line = [bbox_points, (text, confidence)]
+                    if isinstance(line, (list, tuple)) and len(line) >= 2:
+                        text_part = line[1]
+                        if isinstance(text_part, (list, tuple)) and len(text_part) >= 2:
+                            t_clean = str(text_part[0]).strip()
+                            if t_clean:
+                                all_texts.append(t_clean)
+                                all_scores.append(float(text_part[1]))
+    else:
+        # x86 path: .predict() API — returns list of dicts with rec_texts/rec_scores
+        results = engine.predict(input=str(image_path))
+        for result in results:
+            rec_texts = result.get("rec_texts", [])
+            rec_scores = result.get("rec_scores", [])
+            for t, s in zip(rec_texts, rec_scores):
+                t_clean = str(t).strip()
+                if t_clean:
+                    all_texts.append(t_clean)
+                    all_scores.append(float(s))
 
     if not all_texts:
         return "", 0.0
