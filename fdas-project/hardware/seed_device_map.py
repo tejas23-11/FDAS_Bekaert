@@ -16,6 +16,8 @@ Run once after cloning / after wiping the DB:
     python3 -m hardware.seed_device_map
 """
 
+from __future__ import annotations
+
 import json
 import re
 from pathlib import Path

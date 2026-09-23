@@ -14,7 +14,7 @@ from notify.voice_call import place_call
 debouncer = Debouncer()
 registry = ActiveEventRegistry()
 
-def handle_detected_event(event: DetectedEvent, dry_run: bool = False, skip_debounce: bool = False):
+def handle_detected_event(event: DetectedEvent, dry_run: bool = True, skip_debounce: bool = False):
     """
     Wires together debounce/dedupe -> location resolution + logging -> 
     routing -> notify -> resolution tracking.

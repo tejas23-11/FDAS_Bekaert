@@ -10,8 +10,11 @@ shape, sync with whoever owns the module downstream of you first
 (cv -> backend -> notify).
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Optional
 
 
 @dataclass
@@ -37,4 +40,4 @@ class ResolvedEvent(DetectedEvent):
     device_type: str = ""
     contacts: list[str] = field(default_factory=list)   # full notify list (SMS)
     primary_contact: str = ""                            # who gets the voice call
-    db_record_id: int | None = None
+    db_record_id: Optional[int] = None
