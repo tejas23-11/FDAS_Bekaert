@@ -490,6 +490,113 @@ tr:hover td { background: var(--bg-card-hover); }
     color: var(--text-muted);
 }
 
+/* --- Contact List Management ---------------------------------------------- */
+.contact-lists-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+    gap: 20px;
+    margin-bottom: 28px;
+}
+
+.contact-card {
+    position: relative;
+    overflow: hidden;
+}
+.contact-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+.contact-card:nth-child(1)::before {
+    background: linear-gradient(90deg, var(--green), #4ade80);
+}
+.contact-card:nth-child(2)::before {
+    background: linear-gradient(90deg, var(--amber), #fbbf24);
+}
+
+.contact-icon {
+    font-size: 1.15rem;
+    margin-right: 6px;
+}
+
+.contact-description {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin-bottom: 16px;
+}
+.contact-description strong {
+    color: var(--text-primary);
+}
+
+.contact-input-wrapper {
+    margin-bottom: 12px;
+}
+
+.contact-textarea {
+    width: 100%;
+    padding: 12px 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    line-height: 1.7;
+    resize: vertical;
+    min-height: 100px;
+    transition: border-color var(--transition), box-shadow var(--transition);
+}
+.contact-textarea::placeholder {
+    color: var(--text-muted);
+    font-family: var(--font-sans);
+    font-size: 0.82rem;
+}
+.contact-textarea:focus {
+    outline: none;
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px var(--blue-bg);
+}
+
+.contact-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.contact-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.btn-sms {
+    background: var(--green);
+    color: #fff;
+}
+.btn-sms:hover {
+    background: #16a34a;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(34, 197, 94, 0.3);
+}
+
+.btn-call {
+    background: var(--amber);
+    color: #1a1a1a;
+    font-weight: 700;
+}
+.btn-call:hover {
+    background: #d97706;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+}
+
+.btn-icon {
+    font-size: 1rem;
+}
+
 /* --- Login Page ----------------------------------------------------------- */
 .login-page {
     display: flex;

@@ -3,8 +3,9 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path("backend/fdas_events.db")
-SCHEMA_PATH = Path("backend/schema.sql")
+_THIS_DIR = Path(__file__).resolve().parent
+DB_PATH = _THIS_DIR / "fdas_events.db"
+SCHEMA_PATH = _THIS_DIR / "schema.sql"
 
 
 def get_connection() -> sqlite3.Connection:

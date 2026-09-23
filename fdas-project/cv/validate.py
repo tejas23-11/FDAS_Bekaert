@@ -25,7 +25,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_KNOWN_DEVICES_PATH = Path("hardware/known_devices.txt")
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_KNOWN_DEVICES_PATH = _PROJECT_ROOT / "hardware" / "known_devices.txt"
 
 # Real panel formats confirmed from site photo (2026-08 visit):
 #   Long form:  "L1 A053"  (letter-prefix loop, space, alpha+3digits)

@@ -44,7 +44,8 @@ from backend.pipeline import handle_detected_event
 from backend.db import init_db
 
 # ── Constants ─────────────────────────────────────────────────────────
-INBOX_DIR = Path("panel_inbox")
+_SCRIPT_DIR = Path(__file__).resolve().parent
+INBOX_DIR = _SCRIPT_DIR / "panel_inbox"
 PROCESSED_DIR = INBOX_DIR / "processed"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff"}
 
@@ -188,11 +189,13 @@ def _ocr_tesseract(roi) -> tuple[str, float]:
     return text, 0.5  # Tesseract confidence is unreliable, use 0.5 as placeholder
 
 
-def load_calibration(path: str = "hardware/calibration.json") -> dict:
+def load_calibration(path: str | None = None) -> dict:
     """Load calibration config (screen ROI coordinates)."""
+    if path is None:
+        path = str(_SCRIPT_DIR / "hardware" / "calibration.json")
     calib_path = Path(path)
     if not calib_path.exists():
-        calib_path = Path("hardware/calibration.example.json")
+        calib_path = _SCRIPT_DIR / "hardware" / "calibration.example.json"
         print(f"  [!!] {path} not found, using {calib_path}")
     with open(calib_path) as f:
         return json.load(f)
@@ -427,7 +430,7 @@ def main():
     )
     parser.add_argument(
         "--calibration", type=str, default="hardware/calibration.json",
-        help="Path to calibration.json"
+        help="Path to calibration.json (default: hardware/calibration.json relative to script)"
     )
     args = parser.parse_args()
 
@@ -435,14 +438,20 @@ def main():
     init_db()
 
     # Load calibration
-    calibration = load_calibration(args.calibration)
+    calibration = load_calibration(args.calibration if args.calibration != "hardware/calibration.json" else None)
 
     if args.image:
         # Single image mode
         image_path = Path(args.image)
         if not image_path.exists():
-            print(f"ERROR: image not found: {image_path}")
-            sys.exit(1)
+            # Try relative to the script's own directory as fallback
+            alt_path = _SCRIPT_DIR / args.image
+            if alt_path.exists():
+                image_path = alt_path
+            else:
+                print(f"ERROR: image not found: {image_path}")
+                print(f"       (also checked: {alt_path})")
+                sys.exit(1)
         success = process_image(image_path, calibration, dry_run=args.dry_run)
         sys.exit(0 if success else 1)
 

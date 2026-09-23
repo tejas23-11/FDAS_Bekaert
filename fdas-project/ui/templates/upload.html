@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Device Map Upload{% endblock %}
+{% block title %}Device Map & Contacts{% endblock %}
 
 {% block content %}
 <div class="page-header">
-    <h2>Device Map Management</h2>
-    <p>Upload a spreadsheet to add or update device-to-location mappings</p>
+    <h2>Device Map & Contact Management</h2>
+    <p>Upload device mappings and manage SMS / Call notification lists</p>
 </div>
 
 <!-- Upload Summary (shown after a successful upload) -->
@@ -20,12 +20,79 @@
     </div>
     {% else %}
     <div class="upload-summary success">
-        <h3>✅ Upload Complete — {{ updated }} device(s) updated</h3>
+        <h3>Upload Complete — {{ updated }} device(s) updated</h3>
     </div>
     {% endif %}
 {% endif %}
 
-<!-- Upload Zone -->
+<!-- ═══════════════════════════════════════════════════════════════════
+     Notification Contact Lists — SMS & Call
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="contact-lists-grid">
+
+    <!-- SMS Contacts -->
+    <div class="card contact-card">
+        <div class="card-header">
+            <span class="card-title"><span class="contact-icon sms-icon">💬</span> SMS Contact List</span>
+            <span class="card-subtitle">{{ sms_contacts|length }} number(s)</span>
+        </div>
+        <p class="contact-description">
+            These phone numbers will receive <strong>SMS notifications</strong> for all alert types (fire, fault, supervisory).
+        </p>
+        <form method="POST" action="{{ url_for('upload.update_sms_contacts') }}">
+            <div class="contact-input-wrapper">
+                <textarea
+                    name="sms_contacts"
+                    id="sms-contacts-input"
+                    class="contact-textarea"
+                    placeholder="Enter phone numbers (one per line)&#10;e.g.&#10;+91 98765 43210&#10;+91 87654 32109"
+                    rows="5"
+                >{% for num in sms_contacts %}{{ num }}{% if not loop.last %}
+{% endif %}{% endfor %}</textarea>
+            </div>
+            <div class="contact-actions">
+                <span class="contact-hint">One number per line or comma-separated</span>
+                <button type="submit" class="btn btn-sms" id="save-sms-btn">
+                    <span class="btn-icon">💬</span> Update SMS List
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Call Contacts -->
+    <div class="card contact-card">
+        <div class="card-header">
+            <span class="card-title"><span class="contact-icon call-icon">📞</span> Call Contact List</span>
+            <span class="card-subtitle">{{ call_contacts|length }} number(s)</span>
+        </div>
+        <p class="contact-description">
+            These phone numbers will receive a <strong>voice call alert</strong> (ring-only, no audio) for <strong>fire events only</strong>.
+        </p>
+        <form method="POST" action="{{ url_for('upload.update_call_contacts') }}">
+            <div class="contact-input-wrapper">
+                <textarea
+                    name="call_contacts"
+                    id="call-contacts-input"
+                    class="contact-textarea"
+                    placeholder="Enter phone numbers (one per line)&#10;e.g.&#10;+91 98765 43210"
+                    rows="5"
+                >{% for num in call_contacts %}{{ num }}{% if not loop.last %}
+{% endif %}{% endfor %}</textarea>
+            </div>
+            <div class="contact-actions">
+                <span class="contact-hint">One number per line or comma-separated</span>
+                <button type="submit" class="btn btn-call" id="save-call-btn">
+                    <span class="btn-icon">📞</span> Update Call List
+                </button>
+            </div>
+        </form>
+    </div>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     Device Map Upload
+     ═══════════════════════════════════════════════════════════════════ -->
 <div class="card" style="margin-bottom: 28px;">
     <div class="card-header">
         <span class="card-title">Upload Device Map</span>
@@ -51,7 +118,9 @@
     </form>
 </div>
 
-<!-- Current Device Map -->
+<!-- ═══════════════════════════════════════════════════════════════════
+     Current Device Map Table
+     ═══════════════════════════════════════════════════════════════════ -->
 <div class="card">
     <div class="card-header">
         <span class="card-title">Current Device Map</span>
