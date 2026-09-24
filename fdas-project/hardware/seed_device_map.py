@@ -81,7 +81,7 @@ def _parse_excel(excel_path: Path) -> list[dict]:
     seen_codes = set()  # Deduplicate
 
     for row in ws.iter_rows(min_row=2, values_only=True):
-        # Columns: [None, SR.NO, ADDRESS, LOCATION, DESCRIPTION]
+        # Columns: [None, SR.NO, ADDRESS, LOCATION, DESCRIPTION] and rows as well
         if len(row) < 5:
             continue
 
