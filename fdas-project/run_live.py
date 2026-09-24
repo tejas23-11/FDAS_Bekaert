@@ -121,16 +121,8 @@ def _get_paddle_engine():
     try:
         from paddleocr import PaddleOCR
 
-        if is_arm:
-            # On ARM: use older PP-OCRv3 models (lighter, more stable)
-            _paddle_engine = PaddleOCR(
-                use_angle_cls=False,
-                lang="en",
-                use_gpu=False,
-                show_log=False,
-            )
-        else:
-            # On x86: use the newer PP-OCRv6 with .predict() API
+        # Try modern PaddleOCR 3.x API first
+        try:
             _paddle_engine = PaddleOCR(
                 lang="en",
                 device="cpu",
@@ -138,6 +130,14 @@ def _get_paddle_engine():
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
+            )
+        except TypeError:
+            # Fallback for older PaddleOCR v2.x
+            _paddle_engine = PaddleOCR(
+                use_angle_cls=False,
+                lang="en",
+                use_gpu=False,
+                show_log=False,
             )
         _paddle_available = True
         return _paddle_engine
@@ -169,15 +169,25 @@ def _ocr_paddle(image_path: Path, roi, calibration: dict) -> tuple[str, float]:
     all_texts = []
     all_scores = []
 
-    if _is_arm_platform():
-        # ARM path: .ocr() API — returns list of [bbox, (text, score)] per line
+    if hasattr(engine, "predict"):
+        # Modern PaddleOCR 3.x API (.predict)
+        results = engine.predict(input=str(image_path))
+        for result in results:
+            rec_texts = result.get("rec_texts", []) if isinstance(result, dict) else getattr(result, "rec_texts", [])
+            rec_scores = result.get("rec_scores", []) if isinstance(result, dict) else getattr(result, "rec_scores", [])
+            for t, s in zip(rec_texts, rec_scores):
+                t_clean = str(t).strip()
+                if t_clean:
+                    all_texts.append(t_clean)
+                    all_scores.append(float(s))
+    else:
+        # Legacy PaddleOCR 2.x API (.ocr)
         results = engine.ocr(str(image_path), cls=False)
         if results:
             for line_group in results:
                 if line_group is None:
                     continue
                 for line in line_group:
-                    # line = [bbox_points, (text, confidence)]
                     if isinstance(line, (list, tuple)) and len(line) >= 2:
                         text_part = line[1]
                         if isinstance(text_part, (list, tuple)) and len(text_part) >= 2:
@@ -185,17 +195,6 @@ def _ocr_paddle(image_path: Path, roi, calibration: dict) -> tuple[str, float]:
                             if t_clean:
                                 all_texts.append(t_clean)
                                 all_scores.append(float(text_part[1]))
-    else:
-        # x86 path: .predict() API — returns list of dicts with rec_texts/rec_scores
-        results = engine.predict(input=str(image_path))
-        for result in results:
-            rec_texts = result.get("rec_texts", [])
-            rec_scores = result.get("rec_scores", [])
-            for t, s in zip(rec_texts, rec_scores):
-                t_clean = str(t).strip()
-                if t_clean:
-                    all_texts.append(t_clean)
-                    all_scores.append(float(s))
 
     if not all_texts:
         return "", 0.0

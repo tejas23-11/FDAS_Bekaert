@@ -62,14 +62,7 @@ def _try_paddle_ocr(image: np.ndarray):
 
             from paddleocr import PaddleOCR
 
-            if is_arm:
-                _paddle_engine = PaddleOCR(
-                    use_angle_cls=False,
-                    lang="en",
-                    use_gpu=False,
-                    show_log=False,
-                )
-            else:
+            try:
                 _paddle_engine = PaddleOCR(
                     lang="en",
                     device="cpu",
@@ -78,12 +71,28 @@ def _try_paddle_ocr(image: np.ndarray):
                     use_doc_unwarping=False,
                     use_textline_orientation=False,
                 )
+            except TypeError:
+                _paddle_engine = PaddleOCR(
+                    use_angle_cls=False,
+                    lang="en",
+                    use_gpu=False,
+                    show_log=False,
+                )
 
         all_texts = []
         all_scores = []
 
-        if is_arm:
-            # ARM path: .ocr() API — returns list of [bbox, (text, score)]
+        if hasattr(_paddle_engine, "predict"):
+            results = _paddle_engine.predict(input=image)
+            for result in results:
+                rec_texts = result.get("rec_texts", []) if isinstance(result, dict) else getattr(result, "rec_texts", [])
+                rec_scores = result.get("rec_scores", []) if isinstance(result, dict) else getattr(result, "rec_scores", [])
+                for t, s in zip(rec_texts, rec_scores):
+                    t_clean = str(t).strip()
+                    if t_clean:
+                        all_texts.append(t_clean)
+                        all_scores.append(float(s))
+        else:
             results = _paddle_engine.ocr(image, cls=False)
             if results:
                 for line_group in results:
@@ -97,17 +106,6 @@ def _try_paddle_ocr(image: np.ndarray):
                                 if t_clean:
                                     all_texts.append(t_clean)
                                     all_scores.append(float(text_part[1]))
-        else:
-            # x86 path: .predict() API — returns dicts with rec_texts/rec_scores
-            results = _paddle_engine.predict(input=image)
-            for result in results:
-                rec_texts = result.get("rec_texts", [])
-                rec_scores = result.get("rec_scores", [])
-                for t, s in zip(rec_texts, rec_scores):
-                    t_clean = str(t).strip()
-                    if t_clean:
-                        all_texts.append(t_clean)
-                        all_scores.append(float(s))
 
         if not all_texts:
             return "", 0.0
