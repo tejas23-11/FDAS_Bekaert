@@ -121,7 +121,7 @@ def _get_paddle_engine():
     try:
         from paddleocr import PaddleOCR
 
-        # Try modern PaddleOCR 3.x API first
+        # Try modern PaddleOCR 3.x API first (works on both ARM and x86)
         try:
             _paddle_engine = PaddleOCR(
                 lang="en",
@@ -132,7 +132,7 @@ def _get_paddle_engine():
                 use_textline_orientation=False,
             )
         except TypeError:
-            # Fallback for older PaddleOCR v2.x
+            # Fallback for older PaddleOCR 2.x
             _paddle_engine = PaddleOCR(
                 use_angle_cls=False,
                 lang="en",
@@ -170,7 +170,7 @@ def _ocr_paddle(image_path: Path, roi, calibration: dict) -> tuple[str, float]:
     all_scores = []
 
     if hasattr(engine, "predict"):
-        # Modern PaddleOCR 3.x API (.predict)
+        # PaddleOCR 3.x: .predict() API returns dicts with rec_texts/rec_scores
         results = engine.predict(input=str(image_path))
         for result in results:
             rec_texts = result.get("rec_texts", []) if isinstance(result, dict) else getattr(result, "rec_texts", [])
@@ -181,7 +181,7 @@ def _ocr_paddle(image_path: Path, roi, calibration: dict) -> tuple[str, float]:
                     all_texts.append(t_clean)
                     all_scores.append(float(s))
     else:
-        # Legacy PaddleOCR 2.x API (.ocr)
+        # PaddleOCR 2.x: .ocr() API returns list of [bbox, (text, score)]
         results = engine.ocr(str(image_path), cls=False)
         if results:
             for line_group in results:
