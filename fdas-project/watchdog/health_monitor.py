@@ -112,22 +112,21 @@ def run(iterations: int | None = None, persist: bool = True):
                 None if hb_ok else "Main pipeline heartbeat stale or missing",
             )
 
-        # Camera and process checks are skipped in the dev/test sandbox
-        # (no real camera device); Member 5 re-enables these on the Pi.
-        # When enabled, they follow the same pattern:
-        #   cam_ok = check_camera_feed()
-        #   if not cam_ok:
-        #       raise_fault_alert("Camera feed blank or unavailable")
-        #   if persist:
-        #       _record_health("camera", "ok" if cam_ok else "fault",
-        #                      None if cam_ok else "Camera feed blank or unavailable")
-        #
-        #   proc_ok = check_process_alive()
-        #   if not proc_ok:
-        #       raise_fault_alert("Pipeline process not running")
-        #   if persist:
-        #       _record_health("process", "ok" if proc_ok else "fault",
-        #                      None if proc_ok else "Pipeline process not running")
+        # --- Camera feed check ---
+        cam_ok = check_camera_feed()
+        if not cam_ok:
+            raise_fault_alert("Camera feed blank or unavailable")
+        if persist:
+            _record_health("camera", "ok" if cam_ok else "fault",
+                           None if cam_ok else "Camera feed blank or unavailable")
+
+        # --- Pipeline process check ---
+        proc_ok = check_process_alive()
+        if not proc_ok:
+            raise_fault_alert("Pipeline process not running")
+        if persist:
+            _record_health("process", "ok" if proc_ok else "fault",
+                           None if proc_ok else "Pipeline process not running")
 
         # Prune old rows periodically (every 100 cycles ≈ ~8 min at 5s interval)
         if persist and count > 0 and count % 100 == 0:

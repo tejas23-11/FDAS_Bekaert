@@ -138,10 +138,10 @@ def run_pipeline(source, calibration: dict, heartbeat: bool = True):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="FDAS Camera Pipeline — live or test")
     parser.add_argument("--source", default=0, help="Camera index, video path, or image folder")
     parser.add_argument("--calibration", default="hardware/calibration.json")
-    parser.add_argument("--dry-run", action="store_true", help="Print events instead of forwarding to backend")
+    parser.add_argument("--dry-run", action="store_true", help="Print events instead of sending real SMS/calls")
     args = parser.parse_args()
 
     calib_path = args.calibration
@@ -154,10 +154,38 @@ if __name__ == "__main__":
     if isinstance(source, str) and source.isdigit():
         source = int(source)
 
-    for event in run_pipeline(source, calibration):
-        if args.dry_run:
-            print(event)
-        else:
-            from backend.pipeline import handle_detected_event
+    # Initialize the database before processing events
+    from backend.db import init_db
+    init_db()
 
-            handle_detected_event(event)
+    mode = "DRY-RUN" if args.dry_run else "LIVE"
+    src_label = f"camera {source}" if isinstance(source, int) else source
+    print(f"[FDAS] Starting pipeline — source: {src_label}, mode: {mode}")
+    print(f"[FDAS] Calibration: {calib_path}")
+    if isinstance(source, int):
+        print(f"[FDAS] Camera FPS: {calibration['camera'].get('capture_fps', 1)}")
+    print(f"[FDAS] Press Ctrl+C to stop\n")
+
+    event_count = 0
+    try:
+        for event in run_pipeline(source, calibration):
+            event_count += 1
+            print(f"\n{'='*60}")
+            print(f"  EVENT #{event_count}")
+            print(f"  Device: {event.device_code}")
+            print(f"  Type:   {event.message_type.upper()}")
+            print(f"  Conf:   {event.confidence:.3f}")
+            print(f"  Frame:  {event.frame_id}")
+            print(f"  Text:   {event.raw_text[:100]}...")
+            print(f"{'='*60}")
+
+            if args.dry_run:
+                print(f"  [DRY-RUN] Would route to backend pipeline")
+                from backend.pipeline import handle_detected_event
+                handle_detected_event(event, dry_run=True)
+            else:
+                from backend.pipeline import handle_detected_event
+                handle_detected_event(event, dry_run=False)
+    except KeyboardInterrupt:
+        print(f"\n[FDAS] Stopped. Total events detected: {event_count}")
+

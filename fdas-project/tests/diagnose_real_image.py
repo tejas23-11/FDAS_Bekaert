@@ -14,9 +14,13 @@ Usage:
 Default: tests/real_panel_replica.png  or  tests/real_panel.jpg
 """
 
+
 from __future__ import annotations
 
-import json, subprocess, sys, tempfile
+import json
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from PIL import Image as PILImage, ImageFilter, ImageOps
 
