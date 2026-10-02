@@ -42,12 +42,49 @@ def load_calibration(path: str = "hardware/calibration.json") -> dict:
         return json.load(f)
 
 
+def _arducam_frame_source() -> Iterator[np.ndarray]:
+    """
+    Captures frames directly from Arducam / libcamera using in-memory RAM (/dev/shm).
+    Stores temporary frames in RAM (tmpfs) to prevent SD card wear during
+    24/7 continuous operation.
+    """
+    import subprocess
+
+    shm_path = Path("/dev/shm/fdas_live.jpg")
+    cmd = [
+        "libcamera-still",
+        "--nopreview",
+        "-t", "500",
+        "--width", "1920",
+        "--height", "1080",
+        "-q", "90",
+        "-o", str(shm_path),
+    ]
+
+    print("  [capture] Starting Arducam / libcamera continuous capture via RAM buffer...")
+    while True:
+        try:
+            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=6)
+            if res.returncode == 0 and shm_path.exists():
+                frame = cv2.imread(str(shm_path))
+                if frame is not None:
+                    yield frame
+            time.sleep(1.0)
+        except Exception as e:
+            print(f"  [capture] Frame capture retry: {e}")
+            time.sleep(2.0)
+
+
 def frame_source(source) -> Iterator[np.ndarray]:
     """
-    Yields frames (BGR numpy arrays) from a camera index, video file, or a
-    directory of images. This is the one place source-type branching
-    happens, so everything downstream just deals with frames.
+    Yields frames (BGR numpy arrays) from a camera index, video file,
+    directory of images, or Arducam / libcamera ribbon camera.
     """
+    # Direct Arducam / libcamera request
+    if str(source).lower() in ("arducam", "libcamera", "rpicam"):
+        yield from _arducam_frame_source()
+        return
+
     path = Path(str(source)) if not isinstance(source, int) else None
 
     if path is not None and path.is_dir():
@@ -59,6 +96,15 @@ def frame_source(source) -> Iterator[np.ndarray]:
 
     cap = cv2.VideoCapture(source)
     try:
+        ok, frame = cap.read()
+        if not ok:
+            # If standard OpenCV V4L2 camera fails, on Pi it's an Arducam CSI ribbon camera!
+            print("  [capture] V4L2 camera 0 not accessible — switching to Arducam (libcamera)...")
+            cap.release()
+            yield from _arducam_frame_source()
+            return
+
+        yield frame
         while True:
             ok, frame = cap.read()
             if not ok:

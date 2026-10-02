@@ -51,6 +51,11 @@ class TestClassify(unittest.TestCase):
     def test_classify_all_zones_secure(self):
         self.assertEqual(classify_message("All Zones Secure"), "normal")
 
+    def test_classify_idle_status_menu_zero_fires(self):
+        # Exact string from real panel idle screen that previously false-alarmed
+        sample = "[Status] 1Fires (0 Fri 02/10/2026 15:06:17 3 Disabled 0 2Faults 4) 5: Actions 4 In Test 0 FIRE FAULT BUZZER MUTED SYSTEM FAULT DELAVED SOUNDERS SILENCED SOUNDER FAULT SUPPLY FAULT AREAL POWER"
+        self.assertEqual(classify_message(sample), "normal")
+
     # --- unknown ---
     def test_classify_empty(self):
         self.assertEqual(classify_message(""), "unknown")

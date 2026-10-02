@@ -81,6 +81,26 @@ def classify_message(text: str) -> str:
 
     text_lower = text.lower()
 
+    # --- Guard: Honeywell idle status menu -------------------------------
+    # The home screen shows a menu: "[Status] 1 Fires (0) 2 Faults (0)..."
+    # An active fire condition switches the screen to the alarm banner:
+    # "First Fire Zone...", "Fire 1/1 at 16:07", etc.
+    import re
+    if "[status]" in text_lower or re.search(r"fires?\s*[\(\[]\s*0\b", text_lower):
+        # A real fire in status mode will have non-zero in parentheses: Fires (1), Fires (2)
+        has_active_fire = re.search(r"fires?\s*[\(\[]\s*([1-9]\d*)\s*[\)\]]", text_lower)
+        has_alarm_banner = any(kw in text_lower for kw in ("first fire", "latest fire", "fire 1/", "fire 2/", "fire at"))
+        if has_active_fire or has_alarm_banner:
+            return "fire"
+
+        # Check for active faults
+        has_active_fault = re.search(r"faults?\s*[\(\[]\s*([1-9]\d*)\s*[\)\]]", text_lower)
+        if has_active_fault:
+            return "fault"
+
+        # Otherwise status screen with 0 active fires is normal
+        return "normal"
+
     # --- Pass 1: exact substring -----------------------------------------
     for category, keywords in _VOCABULARY.items():
         for keyword in keywords:
@@ -115,7 +135,7 @@ def classify_message(text: str) -> str:
         return best_category
 
     # --- Pass 3: normal / idle -------------------------------------------
-    if any(tok in text_lower for tok in ("normal", "secure", "system normal", "all clear")):
+    if any(tok in text_lower for tok in ("normal", "secure", "system normal", "all clear", "status")):
         return "normal"
 
     return "unknown"
