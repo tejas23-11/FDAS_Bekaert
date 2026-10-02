@@ -8,12 +8,40 @@ from cv.event import DetectedEvent, ResolvedEvent
 from backend.db import get_connection
 
 
+def _get_global_contacts(list_type: str) -> list[str]:
+    """Fetch the global contact list from notification_contacts table.
+    
+    Returns an empty list if no global list is configured, so the
+    per-device contacts from device_map are used as fallback.
+    """
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT contacts FROM notification_contacts WHERE list_type = ?",
+        (list_type,),
+    ).fetchone()
+    conn.close()
+    if row:
+        try:
+            contacts = json.loads(row["contacts"])
+            if contacts:  # Only use if non-empty
+                return contacts
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return []
+
+
 def resolve_location(event: DetectedEvent) -> ResolvedEvent | None:
     """
     Cross-reference the confirmed device code against the commissioning-
-    time mapping table (backend/schema.sql: device_map). The first entry
-    in the contacts list is used as the primary_contact for a voice call
-    (fire messages only -- see backend/routing.py).
+    time mapping table (backend/schema.sql: device_map).
+
+    Contact resolution priority:
+      1. Global notification_contacts table (if configured via the dashboard)
+      2. Per-device contacts from device_map (fallback)
+
+    The first entry in the SMS contacts list is used as the primary_contact
+    for a voice call (fire messages only -- see backend/routing.py), unless
+    a separate global call contact list is configured.
 
     Returns None if the device code isn't in the mapping table.
     """
@@ -27,7 +55,15 @@ def resolve_location(event: DetectedEvent) -> ResolvedEvent | None:
     if row is None:
         return None
 
-    contacts = json.loads(row["contacts"])
+    # Resolve contacts: global list takes priority over per-device
+    global_sms = _get_global_contacts("sms")
+    global_call = _get_global_contacts("call")
+    device_contacts = json.loads(row["contacts"])
+
+    contacts = global_sms if global_sms else device_contacts
+    primary_contact = (global_call[0] if global_call
+                       else contacts[0] if contacts
+                       else "")
 
     return ResolvedEvent(
         device_code=event.device_code,
@@ -40,7 +76,7 @@ def resolve_location(event: DetectedEvent) -> ResolvedEvent | None:
         zone=row["zone"],
         device_type=row["device_type"],
         contacts=contacts,
-        primary_contact=contacts[0] if contacts else "",
+        primary_contact=primary_contact,
     )
 
 

@@ -31,9 +31,9 @@
             </nav>
             <div class="sidebar-footer">
                 <form action="{{ url_for('dashboard.shutdown') }}" method="POST" style="margin: 0; padding: 0;"
-                      onsubmit="return confirm('Are you sure you want to shut down the FDAS application? This will stop all monitoring and notifications.');">
+                      onsubmit="return confirm('Close the web dashboard? The detection pipeline and watchdog will continue running in the background.');">
                     <button type="submit" class="sidebar-shutdown-btn">
-                        <span class="nav-icon">⛔</span> Shutdown Application
+                        <span class="nav-icon">⛔</span> Close Dashboard
                     </button>
                 </form>
                 <a href="{{ url_for('auth.logout') }}">

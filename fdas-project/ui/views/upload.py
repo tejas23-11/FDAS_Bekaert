@@ -135,7 +135,24 @@ def upload():
             )
             updated += 1
         conn.commit()
+
+        # Regenerate known_devices.txt so cv/validate.py recognizes new codes
+        all_devices = conn.execute("SELECT device_code FROM device_map ORDER BY device_code").fetchall()
         conn.close()
+
+        kd_path = Path(__file__).parent.parent / "hardware" / "known_devices.txt"
+        kd_path.parent.mkdir(parents=True, exist_ok=True)
+        with kd_path.open("w") as f:
+            for d in all_devices:
+                f.write(d["device_code"] + "\n")
+
+        # Reload the known devices in cv/validate.py (if already imported)
+        try:
+            from cv.validate import _load_known_devices, _known_devices
+            import cv.validate as _v
+            _v._known_devices = _load_known_devices()
+        except Exception:
+            pass  # Module not yet loaded — will pick up on next import
 
     # Build summary for the template.
     error_details = [

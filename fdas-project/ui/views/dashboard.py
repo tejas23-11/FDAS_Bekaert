@@ -8,9 +8,6 @@ shows up without manual reloading.
 from __future__ import annotations
 
 import os
-import signal
-import subprocess
-import sys
 
 from flask import Blueprint, render_template, redirect, url_for, flash, request
 
@@ -82,25 +79,10 @@ def index():
 @dashboard_bp.route("/shutdown", methods=["POST"])
 @login_required
 def shutdown():
-    """Stop the FDAS pipeline and shut down the web UI."""
-    # Kill any running pipeline processes
-    try:
-        if sys.platform == "linux":
-            subprocess.run(
-                ["pkill", "-f", "cv.capture"], capture_output=True, timeout=5
-            )
-            subprocess.run(
-                ["pkill", "-f", "run_live"], capture_output=True, timeout=5
-            )
-            subprocess.run(
-                ["pkill", "-f", "watchdog.health_monitor"], capture_output=True, timeout=5
-            )
-    except Exception:
-        pass
+    """Stop the Flask web UI only. Pipeline and watchdog keep running."""
+    flash("Web UI is shutting down. Pipeline and watchdog continue running.", "success")
 
-    flash("Application is shutting down...", "success")
-
-    # Shut down the Flask server
+    # Shut down the Flask server only
     func = request.environ.get("werkzeug.server.shutdown")
     if func is not None:
         func()
