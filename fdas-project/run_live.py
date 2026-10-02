@@ -376,9 +376,12 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         # Fire detected but device is unknown — send a generic alert SMS
         from notify.sms_gateway import send_sms
         from backend.db import get_connection
+        from backend.location import _get_global_contacts
 
-        contacts = ["+1234567890", "+0987654321"]  # TODO: replace with real contacts
-        unknown_msg = "FIRE detected but at unknown device. Please check the FDAS panel immediately."
+        contacts = _get_global_contacts("sms")
+        if not contacts:
+            contacts = ["+1234567890"]
+        unknown_msg = "FIRE ALARM DETECTED on FDAS panel! Please inspect the central panel immediately."
 
         for contact in contacts:
             send_sms(contact, unknown_msg, dry_run=dry_run)
