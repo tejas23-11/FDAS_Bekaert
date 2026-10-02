@@ -122,6 +122,14 @@ UI_PID=$!
 echo "$UI_PID" > "$PID_DIR/ui.pid"
 echo "  Web UI PID: $UI_PID (log: $LOG_DIR/ui.log)"
 
+# 4. False Alarm Button
+echo "[FDAS] Starting false alarm button monitor..."
+python3 -m hardware.false_alarm_button $DRY_RUN \
+    >> "$LOG_DIR/false_alarm_button.log" 2>&1 &
+BTN_PID=$!
+echo "$BTN_PID" > "$PID_DIR/false_alarm_button.pid"
+echo "  Button PID: $BTN_PID (log: $LOG_DIR/false_alarm_button.log)"
+
 echo ""
 echo "[FDAS] All services started successfully!"
 echo "  Dashboard: http://$(hostname -I | awk '{print $1}'):5000"

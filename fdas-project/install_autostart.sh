@@ -52,12 +52,13 @@ echo "[2/5] Installing systemd services..."
 sudo cp "$SYSTEMD_DIR/fdas-pipeline.service" /etc/systemd/system/
 sudo cp "$SYSTEMD_DIR/fdas-watchdog.service" /etc/systemd/system/
 sudo cp "$SYSTEMD_DIR/fdas-ui.service" /etc/systemd/system/
+sudo cp "$SYSTEMD_DIR/fdas-false-alarm-btn.service" /etc/systemd/system/
 
 # Update the User field in case it's not 'pi'
 CURRENT_USER=$(whoami)
 if [ "$CURRENT_USER" != "pi" ]; then
     echo "  Updating service user to: $CURRENT_USER"
-    sudo sed -i "s/User=pi/User=$CURRENT_USER/g" /etc/systemd/system/fdas-*.service
+    sudo sed -i "s/User=pi/User=$CURRENT_USER/g" /etc/systemd/system/fdas-pipeline.service /etc/systemd/system/fdas-watchdog.service /etc/systemd/system/fdas-ui.service
     sudo sed -i "s|/home/pi/|/home/$CURRENT_USER/|g" /etc/systemd/system/fdas-*.service
 fi
 
@@ -69,7 +70,8 @@ echo "[3/5] Enabling autostart on boot..."
 sudo systemctl enable fdas-pipeline.service
 sudo systemctl enable fdas-watchdog.service
 sudo systemctl enable fdas-ui.service
-echo "  All 3 services enabled."
+sudo systemctl enable fdas-false-alarm-btn.service
+echo "  All 4 services enabled (including false alarm button)."
 
 # ── 4. Create desktop shortcut ────────────────────────────────────────
 echo "[4/5] Creating desktop shortcut..."
@@ -121,6 +123,7 @@ echo "  To start them now:"
 echo "    sudo systemctl start fdas-pipeline"
 echo "    sudo systemctl start fdas-watchdog"
 echo "    sudo systemctl start fdas-ui"
+echo "    sudo systemctl start fdas-false-alarm-btn"
 echo ""
 echo "  To check status:"
 echo "    sudo systemctl status fdas-pipeline"
@@ -130,7 +133,7 @@ echo "  Desktop shortcut: $DESKTOP_DIR/FDAS.desktop"
 echo "  Dashboard URL: http://localhost:5000"
 echo ""
 echo "  To UNINSTALL autostart:"
-echo "    sudo systemctl disable fdas-pipeline fdas-watchdog fdas-ui"
+echo "    sudo systemctl disable fdas-pipeline fdas-watchdog fdas-ui fdas-false-alarm-btn"
 echo "    sudo rm /etc/systemd/system/fdas-*.service"
 echo "    rm $DESKTOP_DIR/FDAS.desktop"
 echo "    rm $AUTOSTART_DIR/fdas-browser.desktop"
