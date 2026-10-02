@@ -7,7 +7,12 @@ shows up without manual reloading.
 
 from __future__ import annotations
 
-from flask import Blueprint, render_template
+import os
+import signal
+import subprocess
+import sys
+
+from flask import Blueprint, render_template, redirect, url_for, flash, request
 
 from backend.db import get_connection
 from ui.auth import login_required
@@ -72,3 +77,36 @@ def index():
         banner=banner,
         banner_detail=banner_detail,
     )
+
+
+@dashboard_bp.route("/shutdown", methods=["POST"])
+@login_required
+def shutdown():
+    """Stop the FDAS pipeline and shut down the web UI."""
+    # Kill any running pipeline processes
+    try:
+        if sys.platform == "linux":
+            subprocess.run(
+                ["pkill", "-f", "cv.capture"], capture_output=True, timeout=5
+            )
+            subprocess.run(
+                ["pkill", "-f", "run_live"], capture_output=True, timeout=5
+            )
+            subprocess.run(
+                ["pkill", "-f", "watchdog.health_monitor"], capture_output=True, timeout=5
+            )
+    except Exception:
+        pass
+
+    flash("Application is shutting down...", "success")
+
+    # Shut down the Flask server
+    func = request.environ.get("werkzeug.server.shutdown")
+    if func is not None:
+        func()
+    else:
+        # For newer Werkzeug versions, use os._exit
+        os._exit(0)
+
+    return redirect(url_for("dashboard.index"))
+

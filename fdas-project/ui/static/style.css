@@ -149,6 +149,29 @@ a:hover { color: #60a5fa; }
     color: var(--red);
 }
 
+.sidebar-shutdown-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--red-border);
+    border-radius: var(--radius);
+    background: var(--red-bg);
+    color: var(--red);
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition);
+    margin-bottom: 8px;
+}
+.sidebar-shutdown-btn:hover {
+    background: var(--red);
+    color: #fff;
+    border-color: var(--red);
+}
+
 /* --- Main Content --------------------------------------------------------- */
 .main-content {
     margin-left: var(--sidebar-w);

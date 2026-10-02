@@ -1,0 +1,17 @@
+[Unit]
+Description=FDAS Watchdog — System Health Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/FDAS_Bekaert/fdas-project
+ExecStart=/home/pi/FDAS_Bekaert/fdas-project/venv/bin/python3 -m watchdog.health_monitor
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/pi/FDAS_Bekaert/fdas-project/logs/watchdog.log
+StandardError=append:/home/pi/FDAS_Bekaert/fdas-project/logs/watchdog.log
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

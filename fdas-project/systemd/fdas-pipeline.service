@@ -1,0 +1,18 @@
+[Unit]
+Description=FDAS Detection Pipeline — Camera + OCR + Notification
+After=network.target
+Wants=fdas-ui.service fdas-watchdog.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/FDAS_Bekaert/fdas-project
+ExecStart=/home/pi/FDAS_Bekaert/fdas-project/venv/bin/python3 -m cv.capture --source 0
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/pi/FDAS_Bekaert/fdas-project/logs/pipeline.log
+StandardError=append:/home/pi/FDAS_Bekaert/fdas-project/logs/pipeline.log
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
