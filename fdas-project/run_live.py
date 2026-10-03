@@ -139,6 +139,16 @@ def _get_paddle_engine():
                 use_gpu=False,
                 show_log=False,
             )
+        import logging
+        import os
+        os.environ["GLOG_minloglevel"] = "3"
+        for _name in ("ppocr", "paddlex"):
+            _l = logging.getLogger(_name)
+            _l.setLevel(logging.ERROR)
+            _l.propagate = False
+            for _h in _l.handlers:
+                _h.setLevel(logging.ERROR)
+
         _paddle_available = True
         return _paddle_engine
     except ImportError:
@@ -333,17 +343,26 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     # ── Stage 5: Classify ────────────────────────────────────────────
     message_type = classify_message(text)
     if message_type in ("normal", "unknown"):
-        print(f"  [!!] Classified as '{message_type}' — no notification needed")
+        status_label = "✅ NORMAL (All Clear)" if message_type == "normal" else f"ℹ️  {message_type.upper()}"
+        print(f"┌{'─' * 66}┐")
+        print(f"│  FDAS PANEL STATUS: {status_label:<44}│")
+        print(f"├─────────────────────┬────────────────────────────────────────────┤")
+        print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
+        print(f"│  Resolution         │ {w} x {h} pixels{' ' * max(0, 31 - len(f'{w} x {h} pixels'))}│")
+        print(f"│  PaddleOCR Reading  │ {len(text)} chars extracted ({confidence*100:.1f}% confidence){' ' * max(0, 43 - len(f'{len(text)} chars extracted ({confidence*100:.1f}% confidence)'))}│")
+        print(f"│  Active Alarms      │ 0 active fires / faults                    │")
+        print(f"│  Action             │ 🟢 Monitoring... No emergency dispatch     │")
+        print(f"└─────────────────────┴────────────────────────────────────────────┘")
+        print()
         return False
-    print(f"  [OK] Classified: {message_type.upper()}")
 
-    # Show matched keywords
-    from cv.classify import _VOCABULARY
-    text_lower = text.lower()
-    for cat, kws in _VOCABULARY.items():
-        hits = [kw for kw in kws if kw in text_lower]
-        if hits:
-            print(f"       matched keywords for '{cat}': {hits}")
+    print(f"\n┌{'─' * 66}┐")
+    print(f"│  🚨 ALARM DETECTED — {message_type.upper():<43}│")
+    print(f"├─────────────────────┬────────────────────────────────────────────┤")
+    print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
+    print(f"│  Type               │ {message_type.upper():<43}│")
+    print(f"│  Confidence         │ {confidence*100:.1f}%{' ' * 37}│")
+    print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
 
     # ── Stage 6: Extract & validate device code ──────────────────────
     code = extract_code(text)

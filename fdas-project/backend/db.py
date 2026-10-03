@@ -17,9 +17,23 @@ def get_connection() -> sqlite3.Connection:
 
 def init_db():
     """Run once at startup (and safe to re-run — uses IF NOT EXISTS)."""
+    import json
+    from datetime import datetime, timezone
+
     conn = get_connection()
     with open(SCHEMA_PATH) as f:
         conn.executescript(f.read())
+
+    # Set default emergency contact if not already configured
+    default_phone = ["+919545202660"]
+    for list_type in ("sms", "call"):
+        row = conn.execute("SELECT contacts FROM notification_contacts WHERE list_type = ?", (list_type,)).fetchone()
+        if not row:
+            conn.execute(
+                "INSERT INTO notification_contacts (list_type, contacts, updated_at) VALUES (?, ?, ?)",
+                (list_type, json.dumps(default_phone), datetime.now(timezone.utc).isoformat()),
+            )
+
     conn.commit()
     conn.close()
 

@@ -29,8 +29,8 @@ from backend.db import get_connection, init_db
 # On the Pi, copy this file or adjust the path.
 EXCEL_PATH = Path(r"C:\Tejas\Projects\FDAS_bekaert\Appliance_location.xlsx")
 
-# Placeholder contacts — update with real numbers before going live.
-_DEFAULT_CONTACTS = ["+1234567890", "+0987654321"]
+# Real emergency contact
+_DEFAULT_CONTACTS = ["+919545202660"]
 
 # Device type abbreviation -> full name mapping
 _DEVICE_TYPES = {
