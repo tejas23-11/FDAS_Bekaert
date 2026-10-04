@@ -20,8 +20,9 @@ def place_call(db_record_id: int, primary_contact: str, dry_run: bool = True) ->
         status = "placed"
     else:
         import time
-        ser = _serial_port()
+        ser = None
         try:
+            ser = _serial_port()
             # Dial the number (semicolon = voice call)
             ser.write(f'ATD{primary_contact};\r'.encode())
             time.sleep(1)
@@ -38,7 +39,11 @@ def place_call(db_record_id: int, primary_contact: str, dry_run: bool = True) ->
             print(f"[notify] Call error to {primary_contact}: {e}")
             status = "failed"
         finally:
-            ser.close()
+            if ser is not None:
+                try:
+                    ser.close()
+                except Exception:
+                    pass
 
     conn = get_connection()
     conn.execute(

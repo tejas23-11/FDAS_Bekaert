@@ -57,6 +57,9 @@ _VOCABULARY: dict[str, list[str]] = {
         "fire tx activated",
         # Generic backups
         "supervisory",
+        "prealarm",
+        "pre-alarm",
+        "pre alarm",
         "bypassed",
         "disabled",
     ],
@@ -81,11 +84,25 @@ def classify_message(text: str) -> str:
 
     text_lower = text.lower()
 
+    import re
+
+    # --- Guard: Strip static plastic faceplate labels printed below LCD ---
+    # "FIRE FAULT DISABLEMENT BUZZER MUTED SYSTEM FAULT DELAYED MODE SOUNDERS SILENCED..."
+    # The word "FIRE" in this painted row is just the plastic label for the LED, not a fire!
+    faceplate_pattern = r"\bfire\s+fault\s+disablement\s+buzzer\s+muted.*"
+    screen_only = re.sub(faceplate_pattern, "", text_lower).strip()
+    if screen_only:
+        text_lower = screen_only
+
+    # --- Guard: Prealarm is a supervisory warning, NOT a confirmed fire ---
+    # e.g. "Prealarm Zone1 1/1 at 20:29 Device: OPT L1 A053..."
+    if any(kw in text_lower for kw in ("prealarm", "pre-alarm", "pre alarm")):
+        return "supervisory"
+
     # --- Guard: Honeywell idle status menu -------------------------------
     # The home screen shows a menu: "[Status] 1 Fires (0) 2 Faults (0)..."
     # An active fire condition switches the screen to the alarm banner:
     # "First Fire Zone...", "Fire 1/1 at 16:07", etc.
-    import re
     if "[status]" in text_lower or re.search(r"fires?\s*[\(\[]\s*0\b", text_lower):
         # A real fire in status mode will have non-zero in parentheses: Fires (1), Fires (2)
         has_active_fire = re.search(r"fires?\s*[\(\[]\s*([1-9]\d*)\s*[\)\]]", text_lower)

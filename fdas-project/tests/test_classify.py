@@ -44,6 +44,11 @@ class TestClassify(unittest.TestCase):
     def test_classify_delayed_mode(self):
         self.assertEqual(classify_message("Delayed Mode"), "supervisory")
 
+    def test_classify_prealarm(self):
+        # Exact real-world string from Bekaert Honeywell panel
+        sample = "Prealarm Zone1 1/1 at20:29 Device: OPT L1 A053 ABV B100 MC SD L1/53 FIRE FAULT DISABLEMENT BUZZER MUTED SYSTEM FAULT DELAYED MODE SOUNDERS SILENCED SOUNDER FAULT SOUNDERS DISABLED EARTH FAULT POWER SUPPLY FAULT"
+        self.assertEqual(classify_message(sample), "supervisory")
+
     # --- normal ---
     def test_classify_normal(self):
         self.assertEqual(classify_message("System Normal"), "normal")
