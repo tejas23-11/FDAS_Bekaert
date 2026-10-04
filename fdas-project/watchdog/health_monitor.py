@@ -61,16 +61,32 @@ def check_heartbeat(max_age_seconds: float = MAX_HEARTBEAT_AGE_SECONDS) -> bool:
 
 
 def check_camera_feed(device_index: int = 0) -> bool:
-    """Blank/black-frame check. TODO(Member 5): tune brightness threshold
-    against the real camera once hardware arrives."""
-    import cv2
+    """Check if the camera is producing frames.
 
-    cap = cv2.VideoCapture(device_index)
-    ok, frame = cap.read()
-    cap.release()
-    if not ok or frame is None:
+    On the Pi with libcamera, only ONE process can access the camera at a
+    time. Since the pipeline already holds the camera, we check indirectly:
+      1. If the pipeline heartbeat is fresh → camera is working (pipeline
+         would stop heartbeating if the camera failed).
+      2. If the heartbeat is missing (pipeline not running) → try opening
+         the camera directly as a last resort.
+    """
+    # If pipeline is alive and heartbeating, camera must be OK
+    if HEARTBEAT_FILE.exists():
+        age = time.time() - HEARTBEAT_FILE.stat().st_mtime
+        if age <= MAX_HEARTBEAT_AGE_SECONDS:
+            return True
+
+    # Pipeline isn't running — try direct camera access
+    try:
+        import cv2
+        cap = cv2.VideoCapture(device_index)
+        ok, frame = cap.read()
+        cap.release()
+        if not ok or frame is None:
+            return False
+        return frame.mean() > 5
+    except Exception:
         return False
-    return frame.mean() > 5
 
 
 def check_process_alive(process_name: str = "cv.capture") -> bool:
