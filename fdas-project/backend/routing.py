@@ -15,7 +15,7 @@ class RouteDecision:
 _ROUTES = {
     "fire": RouteDecision(send_sms=True, place_call=True),
     "fault": RouteDecision(send_sms=True, place_call=False),
-    "supervisory": RouteDecision(send_sms=True, place_call=False),
+    "supervisory": RouteDecision(send_sms=False, place_call=False),  # Logged to DB/UI, no emergency SMS
     "normal": RouteDecision(send_sms=False, place_call=False),
     "unknown": RouteDecision(send_sms=False, place_call=False),
 }

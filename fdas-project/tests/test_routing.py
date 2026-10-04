@@ -14,7 +14,7 @@ class TestRouting(unittest.TestCase):
 
     def test_route_supervisory(self):
         route = get_route("supervisory")
-        self.assertTrue(route.send_sms)
+        self.assertFalse(route.send_sms)
         self.assertFalse(route.place_call)
 
     def test_route_normal(self):

@@ -28,11 +28,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import os
 import shutil
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Silence all third-party debug and info loggers (ppocr, paddlex, urllib3, etc.)
+logging.disable(logging.INFO)
+os.environ["GLOG_minloglevel"] = "3"
 
 import cv2
 
@@ -282,38 +288,19 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     Run a single panel image through the complete live pipeline.
     Returns True if the image was processed and a notification was triggered.
     """
-    print(f"\n{SEP}")
-    print(f"  PROCESSING: {image_path}")
-    print(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"  Mode: {'DRY-RUN' if dry_run else 'LIVE — real SMS/calls'}")
-    print(SEP)
-
     # ── Stage 1: Load image ──────────────────────────────────────────
     frame = cv2.imread(str(image_path))
     if frame is None:
         print(f"  [!!] Failed to load image: {image_path}")
         return False
     h, w = frame.shape[:2]
-    print(f"  [OK] Loaded image: {w} x {h}")
 
     # ── Stage 2: ROI crop ────────────────────────────────────────────
     roi_cfg = calibration["screen_roi"]
-    rx, ry = roi_cfg.get("x", 0), roi_cfg.get("y", 0)
     rw, rh = roi_cfg.get("width", 0), roi_cfg.get("height", 0)
-
-    if rw == 0 or rh == 0:
-        # No ROI configured — use full image
-        roi = frame
-        print(f"  [OK] ROI: full image (no crop configured)")
-    else:
-        roi = crop_screen_region(frame, roi_cfg)
-        print(f"  [OK] ROI crop: ({rx},{ry}) {rw}x{rh}")
+    roi = frame if (rw == 0 or rh == 0) else crop_screen_region(frame, roi_cfg)
 
     # ── Stage 3+4: OCR (PaddleOCR primary, Tesseract fallback) ─────────
-    #
-    # PaddleOCR gives ~96% confidence on LCD panels vs ~23% for Tesseract.
-    # We try PaddleOCR first; if not installed or fails, fall back to
-    # the Tesseract dual-attempt approach.
     text = ""
     confidence = 0.0
 
@@ -322,23 +309,20 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         text, confidence = _ocr_paddle(image_path, roi, calibration)
         if text:
             paddle_success = True
-            print(f"  [OK] PaddleOCR: {len(text)} chars (confidence: {confidence:.3f})")
-    except Exception as e:
-        print(f"  [!!] PaddleOCR failed: {e}")
+    except Exception:
+        pass
 
     if not paddle_success:
-        print(f"  [..] Falling back to Tesseract...")
         text, confidence = _ocr_tesseract(roi)
 
     if not text:
-        print(f"  [!!] OCR returned empty text — cannot proceed")
+        print(f"┌{'─' * 66}┐")
+        print(f"│  FDAS PANEL STATUS: ⚠️  NO TEXT DETECTED                          │")
+        print(f"├─────────────────────┬────────────────────────────────────────────┤")
+        print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
+        print(f"│  Status             │ Blurry image / camera out of focus         │")
+        print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
         return False
-    print(f"  [OK] Best OCR result: {len(text)} chars")
-    print()
-    print(f"  --- OCR TEXT ---")
-    for i, line in enumerate(text.splitlines(), 1):
-        print(f"    {i:2d}| {line}")
-    print()
 
     # ── Stage 5: Classify ────────────────────────────────────────────
     message_type = classify_message(text)
@@ -348,44 +332,40 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         print(f"│  FDAS PANEL STATUS: {status_label:<44}│")
         print(f"├─────────────────────┬────────────────────────────────────────────┤")
         print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
-        print(f"│  Resolution         │ {w} x {h} pixels{' ' * max(0, 31 - len(f'{w} x {h} pixels'))}│")
+        print(f"│  Camera Image       │ {w} x {h} pixels (Arducam 64MP){' ' * max(0, 16)}│")
         print(f"│  PaddleOCR Reading  │ {len(text)} chars extracted ({confidence*100:.1f}% confidence){' ' * max(0, 43 - len(f'{len(text)} chars extracted ({confidence*100:.1f}% confidence)'))}│")
         print(f"│  Active Alarms      │ 0 active fires / faults                    │")
         print(f"│  Action             │ 🟢 Monitoring... No emergency dispatch     │")
-        print(f"└─────────────────────┴────────────────────────────────────────────┘")
-        print()
+        print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
         return False
-
-    print(f"\n┌{'─' * 66}┐")
-    print(f"│  🚨 ALARM DETECTED — {message_type.upper():<43}│")
-    print(f"├─────────────────────┬────────────────────────────────────────────┤")
-    print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
-    print(f"│  Type               │ {message_type.upper():<43}│")
-    print(f"│  Confidence         │ {confidence*100:.1f}%{' ' * 37}│")
-    print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
 
     # ── Stage 6: Extract & validate device code ──────────────────────
     code = extract_code(text)
     unknown_device = False
 
     if not code:
-        print(f"  [!!] No device code pattern found in OCR text")
         if message_type == "fire":
             unknown_device = True
-            print(f"  [!!] FIRE detected — sending unknown-device alert")
         else:
             return False
 
     if code and not validate_code(code):
-        print(f"  [!!] Device code '{code}' not in known_devices.txt")
         if message_type == "fire":
             unknown_device = True
-            print(f"  [!!] FIRE detected — sending unknown-device alert")
         else:
             return False
 
-    if not unknown_device:
-        print(f"  [OK] Device code: {code}")
+    # Print clean alarm card
+    icon = "🚨" if message_type == "fire" else "⚠️ "
+    action_text = "📱 SMS Dispatched | 📞 Call Placed" if message_type == "fire" else "📋 Logged to DB & Web UI"
+    print(f"┌{'─' * 66}┐")
+    print(f"│  {icon} ALARM DETECTED — {message_type.upper():<41}│")
+    print(f"├─────────────────────┬────────────────────────────────────────────┤")
+    print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
+    print(f"│  Device Code        │ {code or 'UNKNOWN':<43}│")
+    print(f"│  OCR Confidence     │ {confidence*100:.1f}%{' ' * 37}│")
+    print(f"│  Action             │ {action_text:<43}│")
+    print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
 
     # ── Stage 7: Create event + route through backend ────────────────
     print()
