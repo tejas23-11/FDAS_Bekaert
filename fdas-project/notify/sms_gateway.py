@@ -63,17 +63,39 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
         if len(clean_msg) > 140:
             clean_msg = clean_msg[:137] + "..."
 
-        # Set recipient
+        # Set recipient and wait specifically for '>' prompt
         clean_number = "".join(c for c in to_number if c.isdigit() or c == "+")
         ser.write(f'AT+CMGS="{clean_number}"\r'.encode('ascii', errors='ignore'))
-        time.sleep(0.5)
-        ser.read(ser.in_waiting)  # wait for '>' prompt
+
+        prompt_found = False
+        start_t = time.time()
+        buf = b""
+        while time.time() - start_t < 3.0:
+            if ser.in_waiting:
+                buf += ser.read(ser.in_waiting)
+                if b">" in buf:
+                    prompt_found = True
+                    break
+            time.sleep(0.05)
+
+        if not prompt_found:
+            print(f"[notify] SMS failed to {clean_number}: no '>' prompt from modem (got: {buf.decode(errors='replace')})")
+            return False
 
         # Send message body + Ctrl+Z to transmit
         ser.write(clean_msg.encode('ascii', errors='ignore') + b"\x1A")
-        time.sleep(4)  # SIM7600 needs a few seconds to send
 
-        response = ser.read(ser.in_waiting).decode(errors='replace')
+        # Wait up to 10 seconds for +CMGS: or ERROR
+        resp_buf = b""
+        start_t = time.time()
+        while time.time() - start_t < 10.0:
+            if ser.in_waiting:
+                resp_buf += ser.read(ser.in_waiting)
+                if b"+CMGS:" in resp_buf or b"ERROR" in resp_buf:
+                    break
+            time.sleep(0.1)
+
+        response = resp_buf.decode(errors='replace')
         if "+CMGS:" in response:
             print(f"[notify] SMS sent to {clean_number}")
             return True
@@ -89,6 +111,7 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
                 ser.close()
             except Exception:
                 pass
+        time.sleep(1.0)  # Cooldown between SMS dispatches
 
 
 def extract_panel_summary(text: str) -> str:
