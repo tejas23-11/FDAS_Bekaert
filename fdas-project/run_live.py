@@ -399,9 +399,9 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         detected_code = code if code else "UNKNOWN"
         panel_reading = clean_panel_ocr_for_sms(text)
         if panel_reading:
-            fire_msg = f"🚨 FIRE ALARM: {detected_code}\nPanel: {panel_reading}"
+            fire_msg = f"FIRE ALARM: {detected_code}\nPanel: {panel_reading}"
         else:
-            fire_msg = f"🚨 FIRE ALARM: Device {detected_code} triggered. Inspect fire panel immediately."
+            fire_msg = f"FIRE ALARM: Device {detected_code} triggered. Inspect fire panel immediately."
 
         for contact in contacts:
             send_sms(contact, fire_msg, dry_run=dry_run)

@@ -48,26 +48,32 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
     ser = None
     try:
         ser = _serial_port()
-        # Set text mode
+        # Ensure standard GSM charset and text mode
+        ser.write(b'AT+CSCS="GSM"\r')
+        time.sleep(0.2)
         ser.write(b'AT+CMGF=1\r')
-        time.sleep(0.5)
+        time.sleep(0.3)
         ser.read(ser.in_waiting)  # flush response
 
+        # Ensure message is strictly GSM 7-bit ASCII (no emojis which trigger CMS ERROR)
+        clean_msg = "".join(c for c in message if 32 <= ord(c) <= 126 or c in "\r\n")
+
         # Set recipient
-        ser.write(f'AT+CMGS="{to_number}"\r'.encode())
+        clean_number = "".join(c for c in to_number if c.isdigit() or c == "+")
+        ser.write(f'AT+CMGS="{clean_number}"\r'.encode('ascii', errors='ignore'))
         time.sleep(0.5)
         ser.read(ser.in_waiting)  # wait for '>' prompt
 
         # Send message body + Ctrl+Z to transmit
-        ser.write(message.encode() + b"\x1A")
-        time.sleep(3)  # SIM7600 needs a few seconds to send
+        ser.write(clean_msg.encode('ascii', errors='ignore') + b"\x1A")
+        time.sleep(4)  # SIM7600 needs a few seconds to send
 
         response = ser.read(ser.in_waiting).decode(errors='replace')
         if "+CMGS:" in response:
-            print(f"[notify] SMS sent to {to_number}")
+            print(f"[notify] SMS sent to {clean_number}")
             return True
         else:
-            print(f"[notify] SMS failed to {to_number}: {response}")
+            print(f"[notify] SMS failed to {clean_number}: {response}")
             return False
     except Exception as e:
         print(f"[notify] SMS error to {to_number}: {e}")
@@ -130,9 +136,9 @@ def dispatch(
         panel_reading = clean_panel_ocr_for_sms(raw_text)
         loc_str = f" [{location_name}]" if location_name and location_name not in ("Unknown", "Unknown location") else ""
         if panel_reading:
-            message = f"🚨 FIRE ALARM: {device_code}{loc_str}\nPanel: {panel_reading}"
+            message = f"FIRE ALARM: {device_code}{loc_str}\nPanel: {panel_reading}"
         else:
-            message = f"🚨 FIRE ALARM: {device_code}{loc_str} Zone: {zone}. Respond immediately."
+            message = f"FIRE ALARM: {device_code}{loc_str} Zone: {zone}. Respond immediately."
     else:
         template = _MESSAGE_TEMPLATES.get(message_type, "FDAS ALERT: {code} [{device_type}] at {location}, Zone: {zone}.")
         message = template.format(code=device_code, location=location_name, device_type=device_type, zone=zone)
