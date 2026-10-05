@@ -30,6 +30,56 @@ def _get_global_contacts(list_type: str) -> list[str]:
     return []
 
 
+def resolve_zone_location(code_or_zone: str) -> str:
+    """Resolve a physical plant location for a Zone or unmapped device."""
+    import re
+    import sqlite3
+    try:
+        conn = get_connection()
+        # 1. Check exact match in device_map
+        row = conn.execute(
+            "SELECT location_name FROM device_map WHERE device_code = ? OR zone = ? LIMIT 1",
+            (code_or_zone, code_or_zone),
+        ).fetchone()
+        if row and row["location_name"]:
+            conn.close()
+            return row["location_name"]
+
+        # 2. Check if a zone number is mentioned, e.g. "Zone 1"
+        zm = re.search(r'\b(?:Zone\s*)?(\d+)\b', code_or_zone, re.IGNORECASE)
+        if zm:
+            z_num = zm.group(1)
+            row = conn.execute(
+                "SELECT location_name FROM device_map WHERE device_code = ? OR zone LIKE ? LIMIT 1",
+                (f"Zone {z_num}", f"%Zone {z_num}%"),
+            ).fetchone()
+            if row and row["location_name"]:
+                conn.close()
+                return row["location_name"]
+
+            conn.close()
+            if z_num == "1":
+                return "Production Plant / First Aid (Loop 1)"
+            elif z_num == "2":
+                return "Mixing Area / Utility / Mezzanine (Loop 2)"
+            return f"Zone {z_num} Area"
+
+        conn.close()
+    except (sqlite3.OperationalError, Exception):
+        pass
+
+    zm = re.search(r'\b(?:Zone\s*)?(\d+)\b', code_or_zone, re.IGNORECASE)
+    if zm:
+        z_num = zm.group(1)
+        if z_num == "1":
+            return "Production Plant / First Aid (Loop 1)"
+        elif z_num == "2":
+            return "Mixing Area / Utility / Mezzanine (Loop 2)"
+        return f"Zone {z_num} Area"
+
+    return "Plant Area (Check Panel)"
+
+
 def resolve_location(event: DetectedEvent) -> ResolvedEvent | None:
     """
     Cross-reference the confirmed device code against the commissioning-

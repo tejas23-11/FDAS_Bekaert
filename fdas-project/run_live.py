@@ -404,11 +404,15 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
             detected_zone = f"Zone {zm.group(1)}"
 
         detected_code = code if code else (detected_zone if detected_zone else "UNKNOWN")
+        from backend.location import resolve_zone_location
+        loc_name = resolve_zone_location(detected_code)
+        loc_line = f"\nLocation: {loc_name}" if loc_name else ""
+
         panel_reading = clean_panel_ocr_for_sms(text)
         if panel_reading:
-            fire_msg = f"FIRE ALARM: {detected_code}\nPanel: {panel_reading}"
+            fire_msg = f"FIRE ALARM: {detected_code}{loc_line}\nPanel: {panel_reading}"
         else:
-            fire_msg = f"FIRE ALARM: {detected_code}. Check panel immediately."
+            fire_msg = f"FIRE ALARM: {detected_code}{loc_line}. Check panel immediately."
 
         for contact in contacts:
             send_sms(contact, fire_msg, dry_run=dry_run)
@@ -427,7 +431,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
                 text,
                 datetime.now(timezone.utc).isoformat(),
                 confidence,
-                "Unknown location (unmapped device)",
+                loc_name,
                 json.dumps(contacts),
                 primary_contact,
             ),
