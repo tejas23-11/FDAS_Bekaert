@@ -38,6 +38,9 @@ try:
     send_cmd("AT+CMGF=1")
     # Standard GSM
     send_cmd("AT+CSCS=\"GSM\"")
+    # Standard 3GPP text mode parameters (DCS 0, 7-bit, 24h validity)
+    send_cmd("AT+CSMP=17,167,0,0")
+    send_cmd("AT+CSMP?")
     # Routing domain: CS (Circuit-Switched)
     send_cmd("AT+CGSMS=1")
 

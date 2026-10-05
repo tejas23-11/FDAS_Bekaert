@@ -48,11 +48,15 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
     ser = None
     try:
         ser = _serial_port()
-        # Ensure standard GSM charset and text mode
+        # Ensure standard GSM charset, text mode, standard CSMP parameters and CS routing
         ser.write(b'AT+CSCS="GSM"\r')
         time.sleep(0.2)
         ser.write(b'AT+CMGF=1\r')
-        time.sleep(0.3)
+        time.sleep(0.2)
+        ser.write(b'AT+CSMP=17,167,0,0\r')
+        time.sleep(0.2)
+        ser.write(b'AT+CGSMS=1\r')
+        time.sleep(0.2)
         ser.read(ser.in_waiting)  # flush response
 
         # Ensure message is strictly GSM 7-bit ASCII
