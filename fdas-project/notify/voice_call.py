@@ -11,6 +11,9 @@ def _serial_port():
     from notify.gsm_config import get_serial_connection
     return get_serial_connection()
 
+ENABLE_VOICE_CALL = False  # Set to True when ready for live emergency calls
+
+
 def place_call(db_record_id: int, primary_contact: str, dry_run: bool = True) -> bool:
     """
     Places a blank voice call (ring-only, no TTS) to primary_contact.
@@ -18,6 +21,9 @@ def place_call(db_record_id: int, primary_contact: str, dry_run: bool = True) ->
     if dry_run:
         print(f"[notify:DRY-RUN] CALL -> {primary_contact} (ring-only)")
         status = "placed"
+    elif not ENABLE_VOICE_CALL:
+        print(f"[notify] Voice call temporarily DISABLED for testing (skipping call to {primary_contact})")
+        status = "disabled_for_test"
     else:
         import time
         ser = None
