@@ -36,7 +36,7 @@ def handle_detected_event(event: DetectedEvent, dry_run: bool = True, skip_debou
             # Real fire alert: do not drop notification even if unmapped in device_map
             from backend.location import _get_global_contacts
             from cv.event import ResolvedEvent
-            global_sms = _get_global_contacts("sms") or ["+919545202660"]
+            global_sms = _get_global_contacts("sms") or ["+919545202660", "+919730814745", "+919561515546", "+919172319233"]
             global_call = _get_global_contacts("call")
             primary = global_call[0] if global_call else global_sms[0]
             resolved_event = ResolvedEvent(

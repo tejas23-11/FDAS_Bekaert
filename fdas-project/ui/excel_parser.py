@@ -174,7 +174,7 @@ def parse_device_map(file_path: str | Path, default_contacts: list[str] | None =
     import openpyxl
 
     if default_contacts is None:
-        default_contacts = ["+919545202660"]
+        default_contacts = ["+919545202660", "+919730814745", "+919561515546", "+919172319233"]
 
     wb = openpyxl.load_workbook(str(file_path), read_only=True, data_only=True)
     try:

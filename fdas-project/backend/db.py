@@ -24,15 +24,40 @@ def init_db():
     with open(SCHEMA_PATH) as f:
         conn.executescript(f.read())
 
-    # Set default emergency contact if not already configured
-    default_phone = ["+919545202660"]
-    for list_type in ("sms", "call"):
-        row = conn.execute("SELECT contacts FROM notification_contacts WHERE list_type = ?", (list_type,)).fetchone()
-        if not row:
-            conn.execute(
-                "INSERT INTO notification_contacts (list_type, contacts, updated_at) VALUES (?, ?, ?)",
-                (list_type, json.dumps(default_phone), datetime.now(timezone.utc).isoformat()),
-            )
+    # Default emergency contacts
+    default_sms = ["+919545202660", "+919730814745", "+919561515546", "+919172319233"]
+    default_call = ["+919545202660"]
+
+    # Ensure all default SMS recipients are in notification_contacts
+    row = conn.execute("SELECT contacts FROM notification_contacts WHERE list_type = 'sms'").fetchone()
+    if not row:
+        conn.execute(
+            "INSERT INTO notification_contacts (list_type, contacts, updated_at) VALUES ('sms', ?, ?)",
+            (json.dumps(default_sms), datetime.now(timezone.utc).isoformat()),
+        )
+    else:
+        try:
+            contacts = json.loads(row["contacts"])
+            updated = False
+            for num in default_sms:
+                if num not in contacts:
+                    contacts.append(num)
+                    updated = True
+            if updated:
+                conn.execute(
+                    "UPDATE notification_contacts SET contacts = ?, updated_at = ? WHERE list_type = 'sms'",
+                    (json.dumps(contacts), datetime.now(timezone.utc).isoformat()),
+                )
+        except Exception:
+            pass
+
+    # Call contact (Sir's primary number for voice call alerts)
+    row = conn.execute("SELECT contacts FROM notification_contacts WHERE list_type = 'call'").fetchone()
+    if not row:
+        conn.execute(
+            "INSERT INTO notification_contacts (list_type, contacts, updated_at) VALUES ('call', ?, ?)",
+            (json.dumps(default_call), datetime.now(timezone.utc).isoformat()),
+        )
 
     conn.commit()
     conn.close()

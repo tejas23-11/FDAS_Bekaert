@@ -112,7 +112,7 @@ def upload():
 
     try:
         # Use the current global SMS contacts as default for new devices
-        global_contacts = _fetch_contact_list("sms") or ["+919545202660"]
+        global_contacts = _fetch_contact_list("sms") or ["+919545202660", "+919730814745", "+919561515546", "+919172319233"]
         result = parse_device_map(tmp_path, default_contacts=global_contacts)
     except ValueError as e:
         flash(f"Invalid spreadsheet: {e}", "error")

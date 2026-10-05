@@ -389,7 +389,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
 
         contacts = _get_global_contacts("sms")
         if not contacts:
-            contacts = ["+919545202660"]
+            contacts = ["+919545202660", "+919730814745", "+919561515546", "+919172319233"]
 
         call_contacts = _get_global_contacts("call")
         primary_contact = call_contacts[0] if call_contacts else contacts[0]
