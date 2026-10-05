@@ -45,8 +45,9 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
         return True
 
     import time
-    ser = _serial_port()
+    ser = None
     try:
+        ser = _serial_port()
         # Set text mode
         ser.write(b'AT+CMGF=1\r')
         time.sleep(0.5)
@@ -72,7 +73,11 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
         print(f"[notify] SMS error to {to_number}: {e}")
         return False
     finally:
-        ser.close()
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:
+                pass
 
 
 def dispatch(
