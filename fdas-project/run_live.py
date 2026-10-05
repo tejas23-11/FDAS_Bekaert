@@ -350,13 +350,20 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
 
     if not code:
         if message_type == "fire":
-            unknown_device = True
+            # Only treat as unknown-device fire if the panel text contains confirmed alarm banner phrases
+            if any(h in text.lower() for h in ("first fire", "latest fire", "fire 1/", "fire 2/", "fire at")):
+                unknown_device = True
+            else:
+                return False
         else:
             return False
 
     if code and not validate_code(code):
         if message_type == "fire":
-            unknown_device = True
+            if any(h in text.lower() for h in ("first fire", "latest fire", "fire 1/", "fire 2/", "fire at")):
+                unknown_device = True
+            else:
+                return False
         else:
             return False
 

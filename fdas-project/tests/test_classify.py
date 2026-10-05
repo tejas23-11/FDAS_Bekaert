@@ -61,6 +61,15 @@ class TestClassify(unittest.TestCase):
         sample = "[Status] 1Fires (0 Fri 02/10/2026 15:06:17 3 Disabled 0 2Faults 4) 5: Actions 4 In Test 0 FIRE FAULT BUZZER MUTED SYSTEM FAULT DELAVED SOUNDERS SILENCED SOUNDER FAULT SUPPLY FAULT AREAL POWER"
         self.assertEqual(classify_message(sample), "normal")
 
+    def test_classify_faceplate_only(self):
+        # Faceplate painted row with no LCD alarm
+        sample = "FIRE FAULT DISABLEMENT BUZZER MUTED SYSTEM FAULT DELAYED MODE SOUNDERS SILENCED"
+        self.assertEqual(classify_message(sample), "normal")
+
+    def test_classify_cabinet_branding(self):
+        # Cabinet branding title without alarm
+        self.assertEqual(classify_message("HONEYWELL FIRE ALARM SYSTEM"), "normal")
+
     # --- unknown ---
     def test_classify_empty(self):
         self.assertEqual(classify_message(""), "unknown")

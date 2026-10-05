@@ -86,13 +86,25 @@ def classify_message(text: str) -> str:
 
     import re
 
-    # --- Guard: Strip static plastic faceplate labels printed below LCD ---
-    # "FIRE FAULT DISABLEMENT BUZZER MUTED SYSTEM FAULT DELAYED MODE SOUNDERS SILENCED..."
-    # The word "FIRE" in this painted row is just the plastic label for the LED, not a fire!
-    faceplate_pattern = r"\bfire\s+fault\s+disablement\s+buzzer\s+muted.*"
-    screen_only = re.sub(faceplate_pattern, "", text_lower).strip()
-    if screen_only:
-        text_lower = screen_only
+    # --- Guard: Strip static plastic faceplate labels & cabinet branding ---
+    # The words "FIRE FAULT..." printed below or on the LCD bezel are plastic labels, not fire!
+    faceplate_patterns = [
+        r"\bfire\s+fault\s+(?:disablement\s+)?buzzer\s+muted.*",
+        r"\bfire\s+fault\s+buzzer\s+muted.*",
+        r"\b(?:system\s+fault\s+)?delayed\s+mode\s+sounders\s+silenced.*",
+        r"\bfire\s+alarm\s+control\s+panel\b",
+        r"\bfire\s+alarm\s+system\b",
+        r"\bhoneywell\s+fire\b",
+        r"\bhoneywell\b",
+        r"\bintelligent\s+fire\b",
+        r"\bfire\s+protection\b",
+    ]
+    for pat in faceplate_patterns:
+        text_lower = re.sub(pat, "", text_lower).strip()
+
+    # If all detected text was just static faceplate labels, it's normal / idle
+    if not text_lower:
+        return "normal"
 
     # --- Guard: Prealarm is a supervisory warning, NOT a confirmed fire ---
     # e.g. "Prealarm Zone1 1/1 at 20:29 Device: OPT L1 A053..."
