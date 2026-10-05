@@ -122,29 +122,35 @@ def _get_paddle_engine():
     # ARM workaround: set env vars BEFORE importing paddleocr
     if is_arm:
         _setup_arm_env()
-        print("  [OK] ARM platform detected — using PaddleOCR with ARM-safe settings")
 
     try:
         from paddleocr import PaddleOCR
 
-        # Try modern PaddleOCR 3.x API first (works on both ARM and x86)
-        try:
-            _paddle_engine = PaddleOCR(
-                lang="en",
-                device="cpu",
-                enable_mkldnn=False,
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-            )
-        except TypeError:
-            # Fallback for older PaddleOCR 2.x
+        if is_arm:
             _paddle_engine = PaddleOCR(
                 use_angle_cls=False,
                 lang="en",
                 use_gpu=False,
                 show_log=False,
             )
+        else:
+            try:
+                _paddle_engine = PaddleOCR(
+                    lang="en",
+                    device="cpu",
+                    enable_mkldnn=False,
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                    show_log=False,
+                )
+            except TypeError:
+                _paddle_engine = PaddleOCR(
+                    use_angle_cls=False,
+                    lang="en",
+                    use_gpu=False,
+                    show_log=False,
+                )
         import logging
         import os
         os.environ["GLOG_minloglevel"] = "3"
@@ -278,7 +284,6 @@ def load_calibration(path: str | None = None) -> dict:
     calib_path = Path(path)
     if not calib_path.exists():
         calib_path = _SCRIPT_DIR / "hardware" / "calibration.example.json"
-        print(f"  [!!] {path} not found, using {calib_path}")
     with open(calib_path) as f:
         return json.load(f)
 
@@ -368,9 +373,6 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
 
     # ── Stage 7: Create event + route through backend ────────────────
-    print()
-    print(f"  --- BACKEND PIPELINE ---")
-
     if unknown_device:
         # Fire detected but device is unknown — send a generic alert SMS
         from notify.sms_gateway import send_sms
@@ -393,11 +395,6 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         )
         conn.commit()
         conn.close()
-        print(f"  [OK] Unknown-device fire event logged to DB")
-
-        print()
-        print(f"  {'DRY-RUN complete' if dry_run else 'LIVE notifications sent'}")
-        print(SEP)
         return True
 
     event = DetectedEvent(
@@ -410,10 +407,6 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
 
     # skip_debounce=True because we're processing a single manually-dropped image
     handle_detected_event(event, dry_run=dry_run, skip_debounce=True)
-
-    print()
-    print(f"  {'DRY-RUN complete' if dry_run else 'LIVE notifications sent'}")
-    print(SEP)
     return True
 
 
