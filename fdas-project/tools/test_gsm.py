@@ -40,7 +40,7 @@ def send_at_command(ser, cmd: str, wait_secs: float = 0.5) -> str:
     return resp
 
 
-def diagnose_gsm(port: str | None = None, test_phone: str | None = None) -> bool:
+def diagnose_gsm(port: str | None = None, test_phone: str | None = None, test_call: str | None = None) -> bool:
     import serial
 
     # Detect available USB serial ports
@@ -145,7 +145,24 @@ def diagnose_gsm(port: str | None = None, test_phone: str | None = None) -> bool
                 print(f"  [OK] SMS SENT SUCCESSFULLY to {test_phone}!")
             else:
                 print(f"  [FAIL] SMS send failed. Response: {sms_resp}")
+        # 8. Optional: Place test voice call
+        if test_call:
+            clean_call = "".join(c for c in test_call if c.isdigit() or c == "+")
+            print(f"\n  [..] Placing test voice call (ring-only) to: {clean_call}...")
+            ser.reset_input_buffer()
+            ser.write(f'ATD{clean_call};\r'.encode())
+            time.sleep(2)
+            call_resp = ser.read(ser.in_waiting or 1024).decode(errors="replace")
+            print(f"  [..] Modem dial response: {call_resp.strip()}")
+            if "ERROR" in call_resp or "NO CARRIER" in call_resp:
+                print(f"  [FAIL] Call failed: {call_resp.strip()}")
                 return False
+            else:
+                print("  [OK] Call placed! Ringing for 12 seconds...")
+                time.sleep(12)
+                ser.write(b'ATH\r')
+                time.sleep(1)
+                print("  [OK] Hung up successfully.")
 
         print("\n" + "=" * 60)
         print("  GSM DIAGNOSTIC PASSED — Module is ready for live alerts!")
@@ -156,11 +173,16 @@ def diagnose_gsm(port: str | None = None, test_phone: str | None = None) -> bool
         ser.close()
 
 
-if __name__ == "__main__":
+def diagnose_gsm_cli():
     parser = argparse.ArgumentParser(description="FDAS GSM SIM7600 Diagnostic Tool")
     parser.add_argument("--port", default=None, help=f"Serial port (default: {GSM_SERIAL_PORT})")
     parser.add_argument("--phone", default=None, help="Send a real test SMS to this phone number (e.g. +91XXXXXXXXXX)")
+    parser.add_argument("--call", default=None, help="Place a real test voice call to this phone number (e.g. +91XXXXXXXXXX)")
     args = parser.parse_args()
 
-    success = diagnose_gsm(port=args.port, test_phone=args.phone)
+    success = diagnose_gsm(port=args.port, test_phone=args.phone, test_call=args.call)
     sys.exit(0 if success else 1)
+
+
+if __name__ == "__main__":
+    diagnose_gsm_cli()

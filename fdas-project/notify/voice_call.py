@@ -21,22 +21,28 @@ def place_call(db_record_id: int, primary_contact: str, dry_run: bool = True) ->
     else:
         import time
         ser = None
+        clean_phone = "".join(c for c in primary_contact if c.isdigit() or c == "+")
         try:
+            time.sleep(1)  # Brief pause between SMS and Call for modem buffer
             ser = _serial_port()
             # Dial the number (semicolon = voice call)
-            ser.write(f'ATD{primary_contact};\r'.encode())
-            time.sleep(1)
+            ser.write(f'ATD{clean_phone};\r'.encode())
+            time.sleep(2)
             response = ser.read(ser.in_waiting).decode(errors='replace')
-            print(f"[notify] Calling {primary_contact}: {response.strip()}")
+            print(f"[notify] Calling {clean_phone}: {response.strip()}")
 
-            # Let it ring, then hang up
-            from notify.gsm_config import CALL_RING_SECONDS
-            time.sleep(CALL_RING_SECONDS)
-            ser.write(b'ATH\r')  # Hang up
-            time.sleep(1)
-            status = "placed"
+            if "ERROR" in response or "NO CARRIER" in response:
+                print(f"[notify] Call failed to {clean_phone}: {response.strip()}")
+                status = "failed"
+            else:
+                # Let it ring, then hang up
+                from notify.gsm_config import CALL_RING_SECONDS
+                time.sleep(CALL_RING_SECONDS)
+                ser.write(b'ATH\r')  # Hang up
+                time.sleep(1)
+                status = "placed"
         except Exception as e:
-            print(f"[notify] Call error to {primary_contact}: {e}")
+            print(f"[notify] Call error to {clean_phone}: {e}")
             status = "failed"
         finally:
             if ser is not None:

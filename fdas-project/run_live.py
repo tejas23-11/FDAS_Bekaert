@@ -383,12 +383,16 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     if unknown_device:
         # Fire detected but device is unknown / not in device_map
         from notify.sms_gateway import send_sms
+        from notify.voice_call import place_call
         from backend.db import get_connection
         from backend.location import _get_global_contacts
 
         contacts = _get_global_contacts("sms")
         if not contacts:
             contacts = ["+919545202660"]
+
+        call_contacts = _get_global_contacts("call")
+        primary_contact = call_contacts[0] if call_contacts else contacts[0]
 
         # Build a useful message with whatever code we extracted
         detected_code = code if code else "UNKNOWN"
@@ -403,12 +407,31 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
 
         # Log to DB as an unknown-device fire event
         conn = get_connection()
-        conn.execute(
-            "INSERT INTO events (device_code, message_type, raw_text, detected_at, confidence, location_name, sms_status) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("UNKNOWN", message_type, text, datetime.now(timezone.utc).isoformat(), confidence, "Unknown device", "sent"),
+        cur = conn.execute(
+            """
+            INSERT INTO events (device_code, message_type, raw_text, detected_at, confidence,
+                                 location_name, contacts, primary_contact, status, sms_status, call_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 'sent', 'pending')
+            """,
+            (
+                detected_code,
+                message_type,
+                text,
+                datetime.now(timezone.utc).isoformat(),
+                confidence,
+                "Unknown location (unmapped device)",
+                json.dumps(contacts),
+                primary_contact,
+            ),
         )
         conn.commit()
+        event_id = cur.lastrowid
         conn.close()
+
+        # Place voice call to primary contact
+        if primary_contact:
+            place_call(event_id, primary_contact, dry_run=dry_run)
+
         return True
 
     event = DetectedEvent(

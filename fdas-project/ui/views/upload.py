@@ -69,7 +69,7 @@ def _parse_phone_numbers(raw: str) -> list[str]:
     """Parse a textarea of phone numbers (one per line or comma-separated)."""
     numbers = []
     for line in raw.replace(",", "\n").splitlines():
-        num = line.strip()
+        num = "".join(c for c in line.strip() if c.isdigit() or c == "+")
         if num:
             numbers.append(num)
     return numbers
