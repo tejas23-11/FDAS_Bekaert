@@ -91,37 +91,33 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
                 pass
 
 
-def clean_panel_ocr_for_sms(text: str) -> str:
-    """Clean and format raw OCR text from the panel display for SMS inclusion."""
+def extract_panel_summary(text: str) -> str:
+    """Extract only useful info from raw panel OCR: time and zone number.
+    Returns a clean short string like 'Zone 1 | Time: 09:57' for SMS.
+    """
     if not text:
         return ""
     import re
 
-    # Strip painted plastic faceplate labels and cabinet branding
-    faceplate_patterns = [
-        r"\bfire\s+fault\s+(?:disablement\s+)?buzzer\s+muted.*",
-        r"\bfire\s+fault\s+buzzer\s+muted.*",
-        r"\b(?:system\s+fault\s+)?delayed\s+mode\s+sounders\s+silenced.*",
-        r"\bfire\s+alarm\s+control\s+panel\b",
-        r"\bfire\s+alarm\s+system\b",
-        r"\bhoneywell\s+fire\b",
-        r"\bintelligent\s+fire\b",
-    ]
-    cleaned = text
-    for pat in faceplate_patterns:
-        cleaned = re.sub(pat, "", cleaned, flags=re.IGNORECASE).strip()
+    # Extract time (HH:MM format)
+    time_match = re.search(r'\b(\d{1,2}:\d{2})\b', text)
+    time_str = time_match.group(1) if time_match else ""
 
-    # Replace bracket and hash characters that break standard 7-bit GSM SMS
-    cleaned = cleaned.replace("[", "(").replace("]", ")").replace("{", "(").replace("}", ")").replace("#", " ")
+    # Extract zone number
+    zone_match = re.search(r'\bZone\s*(\d+)\b', text, re.IGNORECASE)
+    zone_str = f"Zone {zone_match.group(1)}" if zone_match else ""
 
-    # Collapse excess whitespace into single spaces
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # Extract fire count if available (e.g. "1/1" in "Fire 1/1")
+    fire_match = re.search(r'Fire\s+(\d+/\d+)', text, re.IGNORECASE)
+    fire_str = f"Fires: {fire_match.group(1)}" if fire_match else ""
 
-    # Keep within SMS limit — panel reading must leave room for header + location
-    if len(cleaned) > 70:
-        cleaned = cleaned[:67] + "..."
+    parts = [p for p in [zone_str, fire_str, f"Time: {time_str}" if time_str else ""] if p]
+    return " | ".join(parts)
 
-    return cleaned
+
+def clean_panel_ocr_for_sms(text: str) -> str:
+    """Legacy: kept for backward compat. Use extract_panel_summary for new code."""
+    return extract_panel_summary(text)
 
 
 def dispatch(
@@ -137,17 +133,14 @@ def dispatch(
 ) -> bool:
     """
     Sends to every contact in the resolved contact group.
-    For fire alarms, attaches the clean OCR panel reading so time, zone, and
-    panel location details are immediately visible.
+    For fire alarms, builds a clean structured message with device, location, time and zone.
     """
     if message_type == "fire":
-        panel_reading = clean_panel_ocr_for_sms(raw_text)
+        panel_summary = extract_panel_summary(raw_text)
         has_loc = location_name and location_name not in ("Unknown", "Unknown location", "Unknown location (unmapped device)")
-        loc_line = f"\nLocation: {location_name}" if has_loc else ""
-        if panel_reading:
-            message = f"FIRE ALARM: {device_code}{loc_line}\nPanel: {panel_reading}"
-        else:
-            message = f"FIRE ALARM: {device_code}{loc_line}\nZone: {zone}. Respond immediately."
+        loc_line = f"\nLoc: {location_name}" if has_loc else ""
+        time_line = f"\n{panel_summary}" if panel_summary else ""
+        message = f"FIRE ALARM\nDevice: {device_code}{loc_line}{time_line}"
     else:
         template = _MESSAGE_TEMPLATES.get(message_type, "FDAS ALERT: {code} [{device_type}] at {location}, Zone: {zone}.")
         message = template.format(code=device_code, location=location_name, device_type=device_type, zone=zone)
