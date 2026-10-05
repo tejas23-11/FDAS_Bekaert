@@ -132,35 +132,62 @@ def _parse_contacts(raw: str) -> list[str]:
 
 
 def _parse_2col_data(rows: list[list[str]], default_contacts: list[str]) -> ParseResult:
-    """Parse simple 2-column data [Code/ID, Location]."""
+    """Parse flexible column data — auto-detects code and location columns by header name.
+
+    Handles:
+      - Plain 2-col: ID, Location
+      - Sir's 3-col: Sr. No., Address In Fire Panel, Location (Text To Send on SMS)
+      - Any order as long as headers contain keywords
+    """
     result = ParseResult()
     if not rows:
         return result
 
     header = [c.strip().lower() for c in rows[0]]
-    start_row = 1 if any(h in ("id", "code", "device", "device_code", "address", "location", "sensor") for h in header) else 0
+
+    # Detect code column: contains 'address', 'code', 'device', 'id', 'sensor'
+    code_col = None
+    loc_col = None
+    for i, h in enumerate(header):
+        if code_col is None and any(k in h for k in ("address", "device_code", "device", "code", "sensor")):
+            code_col = i
+        elif loc_col is None and any(k in h for k in ("text to send", "location", "sms", "area", "room", "name")):
+            loc_col = i
+
+    # Fallback: if no header matched (no header row or plain positional)
+    if code_col is None and loc_col is None:
+        # Check if first row looks like data (not a header)
+        if _extract_device_code(rows[0][0]) is not None:
+            code_col, loc_col, start_row = 0, 1, 0
+        else:
+            # Assume first col is sr.no/id, second is code, third is location
+            code_col = 1 if len(rows[0]) > 2 else 0
+            loc_col = 2 if len(rows[0]) > 2 else 1
+            start_row = 1
+    else:
+        start_row = 1
 
     seen = set()
     for row_num, row in enumerate(rows[start_row:], start=start_row + 1):
-        if len(row) < 2:
+        if code_col is None or code_col >= len(row):
             continue
-        raw_code = str(row[0]).strip()
-        raw_loc = str(row[1]).strip()
-        if not raw_code:
+        raw_code = str(row[code_col]).strip()
+        if not raw_code or raw_code.isdigit():
             continue
 
+        raw_loc = str(row[loc_col]).strip() if loc_col is not None and loc_col < len(row) else "Unknown location"
+
         canon_code = _extract_device_code(raw_code) or raw_code.upper()
-        if canon_code in seen:
+        if not canon_code or canon_code in seen:
             continue
         seen.add(canon_code)
 
         device_type = _extract_device_type(raw_code)
-        zone = str(row[2]).strip() if len(row) > 2 and str(row[2]).strip() else raw_loc
 
         result.valid_rows.append(ParsedRow(
             device_code=canon_code,
             location_name=raw_loc or "Unknown location",
-            zone=zone or "Unknown zone",
+            zone=raw_loc or "Unknown zone",
             device_type=device_type,
             contacts=default_contacts,
         ))
@@ -220,13 +247,17 @@ def parse_device_map(file_path: str | Path, default_contacts: list[str] | None =
     if default_contacts is None:
         default_contacts = ["+919545202660", "+919730814745", "+919561515546", "+919172319233"]
 
-    if path.suffix.lower() == ".csv":
+    # Read raw bytes first — detect xlsx by magic header (PK\x03\x04) even if named .csv
+    raw_bytes = path.read_bytes()
+    is_xlsx_bytes = raw_bytes[:4] == b"PK\x03\x04"
+
+    if path.suffix.lower() == ".csv" and not is_xlsx_bytes:
         return _parse_csv_file(path, default_contacts)
 
-    # Excel (.xlsx) parsing
-    import openpyxl
+    # Excel (.xlsx) parsing — works on both .xlsx files AND .csv files that are actually xlsx binaries
+    import openpyxl, io
 
-    wb = openpyxl.load_workbook(str(file_path), read_only=True, data_only=True)
+    wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), read_only=True, data_only=True)
     try:
         ws = wb.active
         if ws is None:
