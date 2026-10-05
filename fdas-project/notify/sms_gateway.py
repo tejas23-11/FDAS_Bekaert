@@ -134,11 +134,12 @@ def dispatch(
     """
     if message_type == "fire":
         panel_reading = clean_panel_ocr_for_sms(raw_text)
-        loc_str = f" [{location_name}]" if location_name and location_name not in ("Unknown", "Unknown location") else ""
+        has_loc = location_name and location_name not in ("Unknown", "Unknown location", "Unknown location (unmapped device)")
+        loc_line = f"\nLocation: {location_name}" if has_loc else ""
         if panel_reading:
-            message = f"FIRE ALARM: {device_code}{loc_str}\nPanel: {panel_reading}"
+            message = f"FIRE ALARM: {device_code}{loc_line}\nPanel: {panel_reading}"
         else:
-            message = f"FIRE ALARM: {device_code}{loc_str} Zone: {zone}. Respond immediately."
+            message = f"FIRE ALARM: {device_code}{loc_line}\nZone: {zone}. Respond immediately."
     else:
         template = _MESSAGE_TEMPLATES.get(message_type, "FDAS ALERT: {code} [{device_type}] at {location}, Zone: {zone}.")
         message = template.format(code=device_code, location=location_name, device_type=device_type, zone=zone)
