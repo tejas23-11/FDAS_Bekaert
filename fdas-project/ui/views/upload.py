@@ -111,7 +111,9 @@ def upload():
         tmp_path = tmp.name
 
     try:
-        result = parse_device_map(tmp_path)
+        # Use the current global SMS contacts as default for new devices
+        global_contacts = _fetch_contact_list("sms") or ["+919545202660"]
+        result = parse_device_map(tmp_path, default_contacts=global_contacts)
     except ValueError as e:
         flash(f"Invalid spreadsheet: {e}", "error")
         return redirect(url_for("upload.index"))

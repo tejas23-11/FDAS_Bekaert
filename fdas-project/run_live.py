@@ -381,15 +381,22 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
 
     # ── Stage 7: Create event + route through backend ────────────────
     if unknown_device:
-        # Fire detected but device is unknown — send a generic alert SMS
+        # Fire detected but device is unknown / not in device_map
         from notify.sms_gateway import send_sms
         from backend.db import get_connection
         from backend.location import _get_global_contacts
 
         contacts = _get_global_contacts("sms")
         if not contacts:
-            contacts = ["+1234567890"]
-        unknown_msg = "FIRE ALARM DETECTED on FDAS panel! Please inspect the central panel immediately."
+            contacts = ["+919545202660"]
+
+        # Build a useful message with whatever code we extracted
+        detected_code = code if code else "UNKNOWN"
+        unknown_msg = (
+            f"FIRE ALARM: Device {detected_code} triggered. "
+            f"Location not in device map. "
+            f"Inspect fire panel immediately."
+        )
 
         for contact in contacts:
             send_sms(contact, unknown_msg, dry_run=dry_run)
