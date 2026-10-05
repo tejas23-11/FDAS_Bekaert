@@ -22,5 +22,16 @@ class TestRouting(unittest.TestCase):
         self.assertFalse(route.send_sms)
         self.assertFalse(route.place_call)
 
+    def test_clean_panel_ocr_for_sms(self):
+        from notify.sms_gateway import clean_panel_ocr_for_sms
+        sample = "Fire 1/1 at 16:07 Zone 1 Device: L1 A110 QA LAB RM HD L1/110 FIRE FAULT DISABLEMENT BUZZER MUTED SYSTEM FAULT DELAYED MODE SOUNDERS SILENCED"
+        cleaned = clean_panel_ocr_for_sms(sample)
+        self.assertIn("Fire 1/1 at 16:07", cleaned)
+        self.assertIn("L1 A110", cleaned)
+        self.assertIn("QA LAB RM", cleaned)
+        self.assertNotIn("BUZZER MUTED", cleaned)
+        self.assertNotIn("SOUNDERS SILENCED", cleaned)
+
+
 if __name__ == '__main__':
     unittest.main()

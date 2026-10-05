@@ -32,8 +32,29 @@ def handle_detected_event(event: DetectedEvent, dry_run: bool = True, skip_debou
 
     resolved_event = resolve_location(event)
     if not resolved_event:
-        print(f"  [!!] Location resolve FAILED for device '{event.device_code}' — not in device_map")
-        return
+        if event.message_type == "fire":
+            # Real fire alert: do not drop notification even if unmapped in device_map
+            from backend.location import _get_global_contacts
+            from cv.event import ResolvedEvent
+            global_sms = _get_global_contacts("sms") or ["+919545202660"]
+            global_call = _get_global_contacts("call")
+            primary = global_call[0] if global_call else global_sms[0]
+            resolved_event = ResolvedEvent(
+                device_code=event.device_code,
+                message_type=event.message_type,
+                raw_text=event.raw_text,
+                timestamp=event.timestamp,
+                confidence=event.confidence,
+                frame_id=event.frame_id,
+                location_name="Unknown location",
+                zone="Unknown zone",
+                device_type="Unknown",
+                contacts=global_sms,
+                primary_contact=primary,
+            )
+        else:
+            print(f"  [!!] Location resolve FAILED for device '{event.device_code}' — not in device_map")
+            return
         
     log_event(resolved_event)
     print(f"  [OK] Event logged to DB (id={resolved_event.db_record_id})")
@@ -51,6 +72,7 @@ def handle_detected_event(event: DetectedEvent, dry_run: bool = True, skip_debou
             device_type=resolved_event.device_type,
             zone=resolved_event.zone,
             dry_run=dry_run,
+            raw_text=resolved_event.raw_text,
         )
         
     if route.place_call and resolved_event.primary_contact:

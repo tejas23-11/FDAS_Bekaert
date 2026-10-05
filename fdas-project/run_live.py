@@ -394,16 +394,17 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         call_contacts = _get_global_contacts("call")
         primary_contact = call_contacts[0] if call_contacts else contacts[0]
 
-        # Build a useful message with whatever code we extracted
+        # Build message with device code AND full panel OCR text (time, zone, location)
+        from notify.sms_gateway import clean_panel_ocr_for_sms
         detected_code = code if code else "UNKNOWN"
-        unknown_msg = (
-            f"FIRE ALARM: Device {detected_code} triggered. "
-            f"Location not in device map. "
-            f"Inspect fire panel immediately."
-        )
+        panel_reading = clean_panel_ocr_for_sms(text)
+        if panel_reading:
+            fire_msg = f"🚨 FIRE ALARM: {detected_code}\nPanel: {panel_reading}"
+        else:
+            fire_msg = f"🚨 FIRE ALARM: Device {detected_code} triggered. Inspect fire panel immediately."
 
         for contact in contacts:
-            send_sms(contact, unknown_msg, dry_run=dry_run)
+            send_sms(contact, fire_msg, dry_run=dry_run)
 
         # Log to DB as an unknown-device fire event
         conn = get_connection()

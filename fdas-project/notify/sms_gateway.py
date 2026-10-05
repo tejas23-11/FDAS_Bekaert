@@ -80,6 +80,36 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
                 pass
 
 
+def clean_panel_ocr_for_sms(text: str) -> str:
+    """Clean and format raw OCR text from the panel display for SMS inclusion."""
+    if not text:
+        return ""
+    import re
+
+    # Strip painted plastic faceplate labels and cabinet branding
+    faceplate_patterns = [
+        r"\bfire\s+fault\s+(?:disablement\s+)?buzzer\s+muted.*",
+        r"\bfire\s+fault\s+buzzer\s+muted.*",
+        r"\b(?:system\s+fault\s+)?delayed\s+mode\s+sounders\s+silenced.*",
+        r"\bfire\s+alarm\s+control\s+panel\b",
+        r"\bfire\s+alarm\s+system\b",
+        r"\bhoneywell\s+fire\b",
+        r"\bintelligent\s+fire\b",
+    ]
+    cleaned = text
+    for pat in faceplate_patterns:
+        cleaned = re.sub(pat, "", cleaned, flags=re.IGNORECASE).strip()
+
+    # Collapse excess whitespace into single spaces
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    # Keep within reasonable SMS length (max ~220 chars)
+    if len(cleaned) > 220:
+        cleaned = cleaned[:217] + "..."
+
+    return cleaned
+
+
 def dispatch(
     db_record_id: int,
     device_code: str,
@@ -89,16 +119,23 @@ def dispatch(
     device_type: str = "",
     zone: str = "",
     dry_run: bool = True,
+    raw_text: str = "",
 ) -> bool:
     """
-    Sends to every contact in the resolved contact group, with wording
-    tailored to the message type. Retries with backoff on failure; marks
-    'escalated' if all retries are exhausted. Always updates
-    events.sms_status independently of the event record itself (already
-    logged before this ever runs).
+    Sends to every contact in the resolved contact group.
+    For fire alarms, attaches the clean OCR panel reading so time, zone, and
+    panel location details are immediately visible.
     """
-    template = _MESSAGE_TEMPLATES.get(message_type, "FDAS ALERT: {code} [{device_type}] at {location}, Zone: {zone}.")
-    message = template.format(code=device_code, location=location_name, device_type=device_type, zone=zone)
+    if message_type == "fire":
+        panel_reading = clean_panel_ocr_for_sms(raw_text)
+        loc_str = f" [{location_name}]" if location_name and location_name not in ("Unknown", "Unknown location") else ""
+        if panel_reading:
+            message = f"🚨 FIRE ALARM: {device_code}{loc_str}\nPanel: {panel_reading}"
+        else:
+            message = f"🚨 FIRE ALARM: {device_code}{loc_str} Zone: {zone}. Respond immediately."
+    else:
+        template = _MESSAGE_TEMPLATES.get(message_type, "FDAS ALERT: {code} [{device_type}] at {location}, Zone: {zone}.")
+        message = template.format(code=device_code, location=location_name, device_type=device_type, zone=zone)
 
     success = False
     attempts = 0
