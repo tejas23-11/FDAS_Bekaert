@@ -32,9 +32,9 @@ _KNOWN_DEVICES_PATH = _PROJECT_ROOT / "hardware" / "known_devices.txt"
 #   Long form:  "L1 A053"  (letter-prefix loop, space, alpha+3digits)
 #   Short form: "L1/53"    (loop/detector-number only, no alpha prefix letter visible)
 #
-# We match both and normalise to the long form for DB lookup.
-_CODE_LONG  = re.compile(r"\bL(\d+)\s+([A-Z]\d{3})\b")   # "L1 A053"
-_CODE_SHORT = re.compile(r"\bL(\d+)/(\d{2,3})\b")          # "L1/53"
+# We match both and normalise to the canonical form "L1 A053" for DB lookup.
+_CODE_LONG  = re.compile(r"L(\d+)\s*([A-Za-z]\d{3})\b")   # "L1 A053", "L1A101"
+_CODE_SHORT = re.compile(r"L(\d+)\s*/\s*(\d{1,3})\b")       # "L1/53", "L1/101", "MCPL1/101"
 
 
 def _load_known_devices() -> set[str]:

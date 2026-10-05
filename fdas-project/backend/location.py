@@ -45,11 +45,33 @@ def resolve_location(event: DetectedEvent) -> ResolvedEvent | None:
 
     Returns None if the device code isn't in the mapping table.
     """
+    code = event.device_code
+    candidates = [code]
+
+    import re
+    # If L1/101 -> also try L1 A101
+    m_slash = re.search(r'L(\d+)\s*[/\\-]\s*(\d{1,3})', code, re.IGNORECASE)
+    if m_slash:
+        loop, num = m_slash.group(1), m_slash.group(2)
+        candidates.append(f"L{loop} A{num.zfill(3)}")
+        candidates.append(f"L{loop}/{int(num)}")
+
+    # If L1 A101 or L1A101 -> also try L1/101
+    m_space = re.search(r'L(\d+)\s*([A-Za-z])\s*(\d{1,3})', code, re.IGNORECASE)
+    if m_space:
+        loop, prefix, num = m_space.group(1), m_space.group(2), m_space.group(3)
+        candidates.append(f"L{loop} {prefix.upper()}{num.zfill(3)}")
+        candidates.append(f"L{loop}/{int(num)}")
+
     conn = get_connection()
-    row = conn.execute(
-        "SELECT location_name, zone, device_type, contacts FROM device_map WHERE device_code = ?",
-        (event.device_code,),
-    ).fetchone()
+    row = None
+    for cand in candidates:
+        row = conn.execute(
+            "SELECT location_name, zone, device_type, contacts FROM device_map WHERE device_code = ?",
+            (cand,),
+        ).fetchone()
+        if row:
+            break
     conn.close()
 
     if row is None:

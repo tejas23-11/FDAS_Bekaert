@@ -171,6 +171,20 @@ def seed() -> None:
     # or from a different commissioning batch).
     _SUPPLEMENTAL = [
         {
+            "device_code": "L1 A101",
+            "location_name": "1ST AID RM",
+            "zone": "Zone 1",
+            "device_type": "MCP (manual call point)",
+            "contacts": _DEFAULT_CONTACTS,
+        },
+        {
+            "device_code": "L1/101",
+            "location_name": "1ST AID RM",
+            "zone": "Zone 1",
+            "device_type": "MCP (manual call point)",
+            "contacts": _DEFAULT_CONTACTS,
+        },
+        {
             "device_code": "L2 A138",
             "location_name": "Utility Room - BD",
             "zone": "Utility Room",

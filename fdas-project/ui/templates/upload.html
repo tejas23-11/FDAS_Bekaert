@@ -97,15 +97,15 @@
     <div class="card-header">
         <span class="card-title">Upload Device Map</span>
         <a href="{{ url_for('upload.download_template') }}" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.8rem;">
-            📥 Download Template
+            📥 Download Template (CSV)
         </a>
     </div>
     <form method="POST" action="{{ url_for('upload.upload') }}" enctype="multipart/form-data">
         <label class="upload-zone" for="file-input" id="upload-dropzone">
             <div class="icon">📄</div>
-            <p>Click to select a <strong>.xlsx</strong> file</p>
-            <p class="hint">Required columns: device_code, location_name, zone, device_type, contacts</p>
-            <input type="file" name="file" id="file-input" accept=".xlsx"
+            <p>Click to select a <strong>.csv</strong> or <strong>.xlsx</strong> file</p>
+            <p class="hint">Simple 2-column format: <strong>ID, Location</strong> (e.g. L1/101, 1ST AID RM)</p>
+            <input type="file" name="file" id="file-input" accept=".csv,.xlsx"
                    style="display: none;"
                    onchange="document.getElementById('file-name').textContent = this.files[0]?.name || ''; document.getElementById('upload-btn').style.display = 'inline-flex';">
         </label>

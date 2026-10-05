@@ -96,37 +96,41 @@ def index():
 @upload_bp.route("/upload", methods=["POST"])
 @login_required
 def upload():
+    import csv
     file = request.files.get("file")
     if not file or not file.filename:
         flash("No file selected.", "error")
         return redirect(url_for("upload.index"))
 
-    if not file.filename.lower().endswith(".xlsx"):
-        flash("Only .xlsx files are accepted.", "error")
+    filename = file.filename.lower()
+    if not (filename.endswith(".csv") or filename.endswith(".xlsx")):
+        flash("Only .xlsx files (or .csv files) are accepted.", "error")
         return redirect(url_for("upload.index"))
 
-    # Save to a temp file for openpyxl to read.
-    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+    # Save to a temp file for parser
+    suffix = ".csv" if filename.endswith(".csv") else ".xlsx"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         file.save(tmp)
         tmp_path = tmp.name
 
     try:
-        # Use the current global SMS contacts as default for new devices
+        # Use current global SMS contacts as default for new devices
         global_contacts = _fetch_contact_list("sms") or ["+919545202660", "+919730814745", "+919561515546", "+919172319233"]
         result = parse_device_map(tmp_path, default_contacts=global_contacts)
     except ValueError as e:
-        flash(f"Invalid spreadsheet: {e}", "error")
+        flash(f"Invalid file: {e}", "error")
         return redirect(url_for("upload.index"))
     finally:
         try:
             Path(tmp_path).unlink(missing_ok=True)
         except PermissionError:
-            pass  # Windows: file handle not yet released; OS cleans up temp dir
+            pass  # Windows file lock cleanup
 
-    # Upsert valid rows into device_map.
+    # Upsert valid rows into device_map
     updated = 0
     if result.valid_rows:
         conn = get_connection()
+        import re
         for row in result.valid_rows:
             conn.execute(
                 "INSERT OR REPLACE INTO device_map "
@@ -136,27 +140,50 @@ def upload():
                  row.device_type, json.dumps(row.contacts)),
             )
             updated += 1
+
+            # Dual-index short slash format (e.g. L1/101 for L1 A101) so lookups always match
+            m = re.match(r"^L(\d+)\s+[A-Za-z](\d{3})$", row.device_code)
+            if m:
+                short_code = f"L{m.group(1)}/{int(m.group(2))}"
+                conn.execute(
+                    "INSERT OR REPLACE INTO device_map "
+                    "(device_code, location_name, zone, device_type, contacts) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (short_code, row.location_name, row.zone,
+                     row.device_type, json.dumps(row.contacts)),
+                )
         conn.commit()
 
-        # Regenerate known_devices.txt so cv/validate.py recognizes new codes
+        # Save an active copy to hardware/device_map.csv for template download & reference
+        csv_out = Path(__file__).resolve().parent.parent.parent / "hardware" / "device_map.csv"
+        csv_out.parent.mkdir(parents=True, exist_ok=True)
+        all_canonical = conn.execute("SELECT device_code, location_name FROM device_map WHERE device_code LIKE 'L% A%' ORDER BY device_code").fetchall()
+        with open(str(csv_out), "w", encoding="utf-8", newline="") as cf:
+            writer = csv.writer(cf)
+            writer.writerow(["ID", "Location"])
+            for d in all_canonical:
+                m = re.match(r"^L(\d+)\s+[A-Za-z](\d{3})$", d["device_code"])
+                disp_id = f"L{m.group(1)}/{int(m.group(2))}" if m else d["device_code"]
+                writer.writerow([disp_id, d["location_name"]])
+
+        # Regenerate known_devices.txt so cv/validate.py recognizes all codes
         all_devices = conn.execute("SELECT device_code FROM device_map ORDER BY device_code").fetchall()
         conn.close()
 
-        kd_path = Path(__file__).parent.parent / "hardware" / "known_devices.txt"
+        kd_path = Path(__file__).resolve().parent.parent.parent / "hardware" / "known_devices.txt"
         kd_path.parent.mkdir(parents=True, exist_ok=True)
-        with kd_path.open("w") as f:
+        with kd_path.open("w", encoding="utf-8") as f:
             for d in all_devices:
                 f.write(d["device_code"] + "\n")
 
-        # Reload the known devices in cv/validate.py (if already imported)
+        # Reload known devices in cv/validate.py cache
         try:
-            from cv.validate import _load_known_devices, _known_devices
             import cv.validate as _v
-            _v._known_devices = _load_known_devices()
+            _v._known_devices = _v._load_known_devices()
         except Exception:
-            pass  # Module not yet loaded — will pick up on next import
+            pass
 
-    # Build summary for the template.
+    # Build summary for template
     error_details = [
         f"Row {e.row_number}: {e.reason}" for e in result.errors
     ]
@@ -175,7 +202,17 @@ def upload():
 @upload_bp.route("/upload/template")
 @login_required
 def download_template():
-    return send_file(str(_TEMPLATE_PATH), as_attachment=True, download_name="device_map_template.xlsx")
+    import csv
+    csv_path = Path(__file__).resolve().parent.parent.parent / "hardware" / "device_map.csv"
+    if not csv_path.exists():
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(str(csv_path), "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["ID", "Location"])
+            writer.writerow(["L1/101", "1st Aid Room (Near Admin Office)"])
+            writer.writerow(["L1/53", "B Drawing Area"])
+            writer.writerow(["L2/138", "Utility Room"])
+    return send_file(str(csv_path), as_attachment=True, download_name="device_map.csv", mimetype="text/csv")
 
 
 @upload_bp.route("/upload/sms-contacts", methods=["POST"])
