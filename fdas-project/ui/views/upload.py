@@ -160,11 +160,9 @@ def upload():
         all_canonical = conn.execute("SELECT device_code, location_name FROM device_map WHERE device_code LIKE 'L% A%' ORDER BY device_code").fetchall()
         with open(str(csv_out), "w", encoding="utf-8", newline="") as cf:
             writer = csv.writer(cf)
-            writer.writerow(["ID", "Location"])
-            for d in all_canonical:
-                m = re.match(r"^L(\d+)\s+[A-Za-z](\d{3})$", d["device_code"])
-                disp_id = f"L{m.group(1)}/{int(m.group(2))}" if m else d["device_code"]
-                writer.writerow([disp_id, d["location_name"]])
+            writer.writerow(["Sr. No.", "ID", "Location"])
+            for idx, d in enumerate(all_canonical, start=1):
+                writer.writerow([idx, d["device_code"], d["location_name"]])
 
         # Regenerate known_devices.txt so cv/validate.py recognizes all codes
         all_devices = conn.execute("SELECT device_code FROM device_map ORDER BY device_code").fetchall()
@@ -208,10 +206,10 @@ def download_template():
         csv_path.parent.mkdir(parents=True, exist_ok=True)
         with open(str(csv_path), "w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["ID", "Location"])
-            writer.writerow(["L1/101", "1st Aid Room (Near Admin Office)"])
-            writer.writerow(["L1/53", "B Drawing Area"])
-            writer.writerow(["L2/138", "Utility Room"])
+            writer.writerow(["Sr. No.", "ID", "Location"])
+            writer.writerow([1, "L1 A101", "1ST AID RM MCPL1/101, First aid room, Near by First aid room"])
+            writer.writerow([2, "L2 A103", "MZ EPR-2 MCP L2/103, Mixing area (WWD)"])
+            writer.writerow([3, "L1 A104", "WIRE RDST MCP L1/104, Coil unloading area"])
     return send_file(str(csv_path), as_attachment=True, download_name="device_map.csv", mimetype="text/csv")
 
 

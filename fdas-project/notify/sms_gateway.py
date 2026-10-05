@@ -112,7 +112,7 @@ def extract_panel_summary(text: str) -> str:
     fire_str = f"Fires: {fire_match.group(1)}" if fire_match else ""
 
     parts = [p for p in [zone_str, fire_str, f"Time: {time_str}" if time_str else ""] if p]
-    return " | ".join(parts)
+    return " - ".join(parts)
 
 
 def clean_panel_ocr_for_sms(text: str) -> str:
