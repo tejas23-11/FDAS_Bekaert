@@ -149,12 +149,18 @@ def _parse_2col_data(rows: list[list[str]], default_contacts: list[str]) -> Pars
     code_col = None
     loc_col = None
     for i, h in enumerate(header):
-        if code_col is None and any(k in h for k in ("address", "device_code", "device", "code", "sensor")):
+        if code_col is None and any(k == h or k in h for k in ("address", "device_code", "device", "code", "sensor", "id")):
             code_col = i
         elif loc_col is None and any(k in h for k in ("text to send", "location", "sms", "area", "room", "name")):
             loc_col = i
 
-    # Fallback: if no header matched (no header row or plain positional)
+    # If only one was matched, assign the other
+    if code_col is not None and loc_col is None:
+        loc_col = 1 if code_col == 0 and len(header) > 1 else (2 if len(header) > 2 else 0)
+    elif loc_col is not None and code_col is None:
+        code_col = 0 if loc_col == 1 and len(header) > 1 else (1 if len(header) > 1 else 0)
+
+    # Fallback: if no header matched at all (no header row or plain positional)
     if code_col is None and loc_col is None:
         # Check if first row looks like data (not a header)
         if _extract_device_code(rows[0][0]) is not None:

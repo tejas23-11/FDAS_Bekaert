@@ -55,8 +55,13 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
         time.sleep(0.3)
         ser.read(ser.in_waiting)  # flush response
 
-        # Ensure message is strictly GSM 7-bit ASCII (no emojis which trigger CMS ERROR)
+        # Ensure message is strictly GSM 7-bit ASCII
         clean_msg = "".join(c for c in message if 32 <= ord(c) <= 126 or c in "\r\n")
+        # Replace characters that break standard GSM 7-bit charset and explode size in text mode
+        clean_msg = clean_msg.replace("[", "(").replace("]", ")").replace("{", "(").replace("}", ")").replace("#", " ")
+        # Hard truncate to 140 chars to ensure it fits in a single standard 160-char SMS
+        if len(clean_msg) > 140:
+            clean_msg = clean_msg[:137] + "..."
 
         # Set recipient
         clean_number = "".join(c for c in to_number if c.isdigit() or c == "+")
@@ -106,12 +111,15 @@ def clean_panel_ocr_for_sms(text: str) -> str:
     for pat in faceplate_patterns:
         cleaned = re.sub(pat, "", cleaned, flags=re.IGNORECASE).strip()
 
+    # Replace bracket and hash characters that break standard 7-bit GSM SMS
+    cleaned = cleaned.replace("[", "(").replace("]", ")").replace("{", "(").replace("}", ")").replace("#", " ")
+
     # Collapse excess whitespace into single spaces
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
-    # Keep within reasonable SMS length (max ~220 chars)
-    if len(cleaned) > 220:
-        cleaned = cleaned[:217] + "..."
+    # Keep within SMS limit — panel reading must leave room for header + location
+    if len(cleaned) > 70:
+        cleaned = cleaned[:67] + "..."
 
     return cleaned
 
