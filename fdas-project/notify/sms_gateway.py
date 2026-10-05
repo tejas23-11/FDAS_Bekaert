@@ -48,6 +48,12 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
     ser = None
     try:
         ser = _serial_port()
+        # Cancel any pending SMS prompt from previously aborted operations
+        ser.write(b"\x1B\r\n")
+        time.sleep(0.2)
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+
         # Ensure standard GSM charset, text mode, standard CSMP parameters and CS routing
         ser.write(b'AT+CSCS="GSM"\r')
         time.sleep(0.2)

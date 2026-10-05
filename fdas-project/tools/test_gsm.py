@@ -70,8 +70,18 @@ def diagnose_gsm(port: str | None = None, test_phone: str | None = None, test_ca
         return False
 
     try:
+        # Cancel any pending SMS prompt from a previously aborted script
+        ser.write(b"\x1B\r\n")
+        time.sleep(0.3)
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+
         # 1. Basic AT handshake
         resp = send_at_command(ser, "AT")
+        if "OK" not in resp:
+            # Retry once
+            time.sleep(0.5)
+            resp = send_at_command(ser, "AT")
         if "OK" not in resp:
             print(f"  [FAIL] Module not responding to AT commands. (Got: {resp!r})")
             return False
@@ -128,23 +138,52 @@ def diagnose_gsm(port: str | None = None, test_phone: str | None = None, test_ca
         # 7. Optional: Send test SMS
         if test_phone:
             print(f"\n  [..] Sending test SMS to: {test_phone}...")
-            # Set text mode
+            # Set text mode, GSM charset, CSMP, CGSMS
             send_at_command(ser, "AT+CMGF=1")
+            send_at_command(ser, 'AT+CSCS="GSM"')
+            send_at_command(ser, "AT+CSMP=17,167,0,0")
+            send_at_command(ser, "AT+CGSMS=1")
+
             ser.reset_input_buffer()
             ser.write(f'AT+CMGS="{test_phone}"\r'.encode())
-            time.sleep(0.5)
+
+            # Wait up to 3 seconds for '>' prompt
+            prompt_found = False
+            start_t = time.time()
+            buf = b""
+            while time.time() - start_t < 3.0:
+                if ser.in_waiting:
+                    buf += ser.read(ser.in_waiting)
+                    if b">" in buf:
+                        prompt_found = True
+                        break
+                time.sleep(0.05)
+
+            if not prompt_found:
+                print(f"  [FAIL] Modem did not provide '>' prompt! Output: {buf.decode(errors='replace')}")
+                return False
 
             # Write message body + Ctrl+Z (\x1A)
             test_msg = "FDAS System Test: SIM7600 GSM module is working properly!"
             ser.write(test_msg.encode() + b"\x1A")
             print("  [..] Waiting for network confirmation...")
-            time.sleep(5)
 
-            sms_resp = ser.read(ser.in_waiting or 1024).decode(errors="replace")
+            resp_buf = b""
+            start_t = time.time()
+            while time.time() - start_t < 15.0:
+                if ser.in_waiting:
+                    resp_buf += ser.read(ser.in_waiting)
+                    if b"+CMGS:" in resp_buf or b"ERROR" in resp_buf:
+                        break
+                time.sleep(0.1)
+
+            sms_resp = resp_buf.decode(errors="replace")
             if "+CMGS:" in sms_resp:
                 print(f"  [OK] SMS SENT SUCCESSFULLY to {test_phone}!")
             else:
                 print(f"  [FAIL] SMS send failed. Response: {sms_resp}")
+                ceer_resp = send_at_command(ser, "AT+CEER")
+                print(f"         Extended error: {ceer_resp}")
         # 8. Optional: Place test voice call
         if test_call:
             clean_call = "".join(c for c in test_call if c.isdigit() or c == "+")
