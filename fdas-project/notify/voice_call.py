@@ -11,7 +11,7 @@ def _serial_port():
     from notify.gsm_config import get_serial_connection
     return get_serial_connection()
 
-ENABLE_VOICE_CALL = False  # Set to True when ready for live emergency calls
+ENABLE_VOICE_CALL = True  # Enabled for live emergency calls
 
 
 def place_call(db_record_id: int, primary_contact: str, dry_run: bool = True) -> bool:
@@ -29,8 +29,14 @@ def place_call(db_record_id: int, primary_contact: str, dry_run: bool = True) ->
         ser = None
         clean_phone = "".join(c for c in primary_contact if c.isdigit() or c == "+")
         try:
-            time.sleep(1)  # Brief pause between SMS and Call for modem buffer
+            time.sleep(1.5)  # Brief pause after SMS so modem settles
             ser = _serial_port()
+            # Clear any pending modem prompts/buffers
+            ser.write(b"\x1B\r\n")
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+
             # Dial the number (semicolon = voice call)
             ser.write(f'ATD{clean_phone};\r'.encode())
             time.sleep(2)
