@@ -127,30 +127,36 @@ def _get_paddle_engine():
         from paddleocr import PaddleOCR
 
         if is_arm:
-            _paddle_engine = PaddleOCR(
-                use_angle_cls=False,
-                lang="en",
-                use_gpu=False,
-                show_log=False,
-            )
+            for attempt in [
+                {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
+                {"lang": "en", "use_gpu": False, "use_angle_cls": False},
+                {"lang": "en", "use_gpu": False},
+                {"lang": "en"},
+            ]:
+                try:
+                    _paddle_engine = PaddleOCR(**attempt)
+                    break
+                except (TypeError, ValueError):
+                    continue
         else:
-            try:
-                _paddle_engine = PaddleOCR(
-                    lang="en",
-                    device="cpu",
-                    enable_mkldnn=False,
-                    use_doc_orientation_classify=False,
-                    use_doc_unwarping=False,
-                    use_textline_orientation=False,
-                    show_log=False,
-                )
-            except TypeError:
-                _paddle_engine = PaddleOCR(
-                    use_angle_cls=False,
-                    lang="en",
-                    use_gpu=False,
-                    show_log=False,
-                )
+            for attempt in [
+                {
+                    "lang": "en",
+                    "device": "cpu",
+                    "enable_mkldnn": False,
+                    "use_doc_orientation_classify": False,
+                    "use_doc_unwarping": False,
+                    "use_textline_orientation": False,
+                },
+                {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
+                {"lang": "en", "use_gpu": False, "use_angle_cls": False},
+                {"lang": "en"},
+            ]:
+                try:
+                    _paddle_engine = PaddleOCR(**attempt)
+                    break
+                except (TypeError, ValueError):
+                    continue
         import logging
         import os
         os.environ["GLOG_minloglevel"] = "3"

@@ -62,22 +62,24 @@ def _try_paddle_ocr(image: np.ndarray):
 
             from paddleocr import PaddleOCR
 
-            try:
-                _paddle_engine = PaddleOCR(
-                    lang="en",
-                    device="cpu",
-                    enable_mkldnn=False,
-                    use_doc_orientation_classify=False,
-                    use_doc_unwarping=False,
-                    use_textline_orientation=False,
-                )
-            except TypeError:
-                _paddle_engine = PaddleOCR(
-                    use_angle_cls=False,
-                    lang="en",
-                    use_gpu=False,
-                    show_log=False,
-                )
+            for attempt in [
+                {
+                    "lang": "en",
+                    "device": "cpu",
+                    "enable_mkldnn": False,
+                    "use_doc_orientation_classify": False,
+                    "use_doc_unwarping": False,
+                    "use_textline_orientation": False,
+                },
+                {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
+                {"lang": "en", "use_gpu": False, "use_angle_cls": False},
+                {"lang": "en"},
+            ]:
+                try:
+                    _paddle_engine = PaddleOCR(**attempt)
+                    break
+                except (TypeError, ValueError):
+                    continue
 
         all_texts = []
         all_scores = []
