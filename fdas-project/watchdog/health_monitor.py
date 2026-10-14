@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HEARTBEAT_FILE = Path("/tmp/fdas_heartbeat")
-MAX_HEARTBEAT_AGE_SECONDS = 10
+MAX_HEARTBEAT_AGE_SECONDS = 60
 CHECK_INTERVAL_SECONDS = 5
 
 # Keep only the last N rows per check type to prevent unbounded growth.
@@ -89,12 +89,12 @@ def check_camera_feed(device_index: int = 0) -> bool:
         return False
 
 
-def check_process_alive(process_name: str = "cv.capture") -> bool:
+def check_process_alive(process_names: tuple[str, ...] = ("cv.capture", "run_live", "run_monitor", "start_fdas")) -> bool:
     import psutil
 
     for proc in psutil.process_iter(["cmdline"]):
         cmdline = " ".join(proc.info.get("cmdline") or [])
-        if process_name in cmdline:
+        if any(p in cmdline for p in process_names):
             return True
     return False
 

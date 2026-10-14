@@ -42,6 +42,9 @@ while true; do
   # Remove previous image to guarantee we never process stale frames
   rm -f panel_inbox/live_cam.jpg
 
+  # Touch heartbeat for watchdog
+  touch /tmp/fdas_heartbeat 2>/dev/null || true
+
   # Capture high-res frame with autofocus delay, suppressing driver noise
   LIBCAMERA_LOG_LEVELS=ERROR libcamera-still -t 1500 --width 1920 --height 1080 -q 90 -o panel_inbox/live_cam.jpg --nopreview >/dev/null 2>&1
 

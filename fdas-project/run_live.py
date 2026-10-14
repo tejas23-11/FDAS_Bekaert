@@ -299,6 +299,11 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     Returns True if the image was processed and a notification was triggered.
     """
     # ── Stage 1: Load image ──────────────────────────────────────────
+    try:
+        Path("/tmp/fdas_heartbeat").touch(exist_ok=True)
+    except Exception:
+        pass
+
     frame = cv2.imread(str(image_path))
     if frame is None:
         print(f"  [!!] Failed to load image: {image_path}")
