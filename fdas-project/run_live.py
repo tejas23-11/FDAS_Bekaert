@@ -180,26 +180,25 @@ def _get_paddle_engine():
 
 
 
-def _ocr_paddle(image_path: Path, roi, calibration: dict) -> tuple[str, float]:
+def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = None) -> tuple[str, float]:
     """
-    Run PaddleOCR on the image. Uses the FULL original image (PaddleOCR
-    handles text detection internally and works better on full images).
-
-    On ARM: uses the older .ocr() API (lighter PP-OCRv3 models).
-    On x86: uses the newer .predict() API (PP-OCRv6 models).
-
-    Returns (text, confidence). Raises if PaddleOCR is not available.
+    Run PaddleOCR on the image or cropped ROI.
     """
     engine = _get_paddle_engine()
     if engine is None:
         raise RuntimeError("PaddleOCR not installed")
+
+    import numpy as np
+    target = roi if (roi is not None and isinstance(roi, np.ndarray)) else (str(image_path) if image_path is not None else None)
+    if target is None:
+        return "", 0.0
 
     all_texts = []
     all_scores = []
 
     if hasattr(engine, "predict"):
         # PaddleOCR 3.x: .predict() API returns dicts with rec_texts/rec_scores
-        results = engine.predict(input=str(image_path))
+        results = engine.predict(input=target)
         for result in results:
             rec_texts = result.get("rec_texts", []) if isinstance(result, dict) else getattr(result, "rec_texts", [])
             rec_scores = result.get("rec_scores", []) if isinstance(result, dict) else getattr(result, "rec_scores", [])
@@ -210,7 +209,7 @@ def _ocr_paddle(image_path: Path, roi, calibration: dict) -> tuple[str, float]:
                     all_scores.append(float(s))
     else:
         # PaddleOCR 2.x: .ocr() API returns list of [bbox, (text, score)]
-        results = engine.ocr(str(image_path), cls=False)
+        results = engine.ocr(target, cls=False)
         if results:
             for line_group in results:
                 if line_group is None:
@@ -304,10 +303,20 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     if frame is None:
         print(f"  [!!] Failed to load image: {image_path}")
         return False
+
+    # Apply camera rotation if specified in calibration
+    rot = calibration.get("camera", {}).get("rotation", 0)
+    if rot == 90:
+        frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    elif rot == 180:
+        frame = cv2.rotate(frame, cv2.ROTATE_180)
+    elif rot == 270:
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
     h, w = frame.shape[:2]
 
     # ── Stage 2: ROI crop ────────────────────────────────────────────
-    roi_cfg = calibration["screen_roi"]
+    roi_cfg = calibration.get("screen_roi", {})
     rw, rh = roi_cfg.get("width", 0), roi_cfg.get("height", 0)
     roi = frame if (rw == 0 or rh == 0) else crop_screen_region(frame, roi_cfg)
 
@@ -360,8 +369,20 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
             if any(h in text.lower() for h in ("first fire", "latest fire", "fire 1/", "fire 2/", "fire at")):
                 unknown_device = True
             else:
+                print(f"┌{'─' * 66}┐")
+                print(f"│  FDAS STATUS: ℹ️  FIRE KEYWORD WITHOUT VALID ALARM BANNER       │")
+                print(f"├─────────────────────┬────────────────────────────────────────────┤")
+                print(f"│  Extracted Text     │ {text[:42]:<43}│")
+                print(f"│  Status             │ Ignored (no device code or alarm banner)   │")
+                print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
                 return False
         else:
+            print(f"┌{'─' * 66}┐")
+            print(f"│  FDAS STATUS: ⚠️  {message_type.upper()} (NO DEVICE CODE FOUND)           │")
+            print(f"├─────────────────────┬────────────────────────────────────────────┤")
+            print(f"│  Extracted Text     │ {text[:42]:<43}│")
+            print(f"│  Status             │ No valid device code extracted             │")
+            print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
             return False
 
     if code and not validate_code(code):
@@ -369,8 +390,20 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
             if any(h in text.lower() for h in ("first fire", "latest fire", "fire 1/", "fire 2/", "fire at")):
                 unknown_device = True
             else:
+                print(f"┌{'─' * 66}┐")
+                print(f"│  FDAS STATUS: ℹ️  UNVALIDATED CODE IN FIRE STATE                 │")
+                print(f"├─────────────────────┬────────────────────────────────────────────┤")
+                print(f"│  Candidate Code     │ {code:<43}│")
+                print(f"│  Status             │ Ignored (code failed validation)           │")
+                print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
                 return False
         else:
+            print(f"┌{'─' * 66}┐")
+            print(f"│  FDAS STATUS: ⚠️  INVALID CODE: {code:<39}│")
+            print(f"├─────────────────────┬────────────────────────────────────────────┤")
+            print(f"│  Extracted Text     │ {text[:42]:<43}│")
+            print(f"│  Status             │ Device code failed whitelist validation    │")
+            print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
             return False
 
     # Print clean alarm card
