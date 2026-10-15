@@ -560,6 +560,9 @@ def watch_inbox(calibration: dict, dry_run: bool = False, poll_seconds: float = 
 
             time.sleep(poll_seconds)
     except KeyboardInterrupt:
+        print("\n  Stopped watching.")
+
+
 def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: float = 3.0):
     """
     Continuous 24/7 camera monitoring loop in a single Python process.
