@@ -43,7 +43,8 @@ while true; do
   touch /tmp/fdas_heartbeat 2>/dev/null || true
 
   # Run fast continuous in-memory monitoring loop (3s interval, PaddleOCR stays in RAM)
-  python3 run_live.py --live --interval 3
+  export PYTHONUNBUFFERED=1
+  python3 -u run_live.py --live --interval 3
 
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ Pipeline loop exited. Restarting in 5s..."
   sleep 5
