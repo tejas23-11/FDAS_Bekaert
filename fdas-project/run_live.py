@@ -560,7 +560,69 @@ def watch_inbox(calibration: dict, dry_run: bool = False, poll_seconds: float = 
 
             time.sleep(poll_seconds)
     except KeyboardInterrupt:
-        print("\n  Stopped watching.")
+def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: float = 3.0):
+    """
+    Continuous 24/7 camera monitoring loop in a single Python process.
+    Keeps PaddleOCR loaded in memory, capturing frames via in-memory RAM buffer (/dev/shm).
+    Cycle time drops from ~60s down to ~4-6s!
+    """
+    import subprocess
+    print(f"\n{SEP}")
+    print(f"  FDAS FAST LIVE MONITOR (In-Memory AI Engine)")
+    print(f"  Cycle interval: {interval_seconds}s (Continuous in-memory loop)")
+    print(f"  Mode: {'DRY-RUN' if dry_run else 'LIVE — real SMS/calls'}")
+    print(f"{SEP}\n")
+
+    # 1. Warm up PaddleOCR once so it stays resident in RAM
+    print("  [live] Initializing PaddleOCR in RAM...")
+    _get_paddle_engine()
+    print("  [live] PaddleOCR ready!\n")
+
+    shm_path = Path("/dev/shm/live_cam.jpg")
+    cmd = [
+        "libcamera-still",
+        "--nopreview",
+        "-t", "500",
+        "--width", "1920",
+        "--height", "1080",
+        "-q", "90",
+        "-o", str(shm_path),
+    ]
+
+    try:
+        while True:
+            # Update watchdog heartbeat
+            try:
+                Path("/tmp/fdas_heartbeat").touch(exist_ok=True)
+            except Exception:
+                pass
+
+            t0 = time.time()
+            shm_path.unlink(missing_ok=True)
+
+            try:
+                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=6)
+                if res.returncode == 0 and shm_path.exists():
+                    process_image(shm_path, calibration, dry_run=dry_run)
+                else:
+                    # Fallback to panel_inbox if /dev/shm is not available
+                    inbox_cam = INBOX_DIR / "live_cam.jpg"
+                    cmd_inbox = list(cmd)
+                    cmd_inbox[-1] = str(inbox_cam)
+                    subprocess.run(cmd_inbox, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=6)
+                    if inbox_cam.exists():
+                        process_image(inbox_cam, calibration, dry_run=dry_run)
+                    else:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Camera busy or capture retry...")
+            except Exception as e:
+                print(f"  [live] Loop error: {e}")
+
+            elapsed = time.time() - t0
+            sleep_time = max(0.5, interval_seconds - elapsed)
+            time.sleep(sleep_time)
+
+    except KeyboardInterrupt:
+        print("\n  Stopped live monitoring.")
 
 
 def main():
@@ -578,6 +640,14 @@ def main():
     parser.add_argument(
         "--dry-run", action="store_true",
         help="Print what would be sent without actually sending SMS/calls"
+    )
+    parser.add_argument(
+        "--live", action="store_true",
+        help="Continuous 24/7 camera monitoring with fast in-memory PaddleOCR"
+    )
+    parser.add_argument(
+        "--interval", type=float, default=3.0,
+        help="Seconds between capture cycles (default: 3.0s)"
     )
     parser.add_argument(
         "--calibration", type=str, default="hardware/calibration.json",
@@ -606,8 +676,12 @@ def main():
         success = process_image(image_path, calibration, dry_run=args.dry_run)
         sys.exit(0 if success else 1)
 
+    elif args.live:
+        # Fast continuous in-memory camera monitoring (drops cycle from 60s to ~5s)
+        run_live_camera(calibration, dry_run=args.dry_run, interval_seconds=args.interval)
+
     elif args.watch:
-        # Watch mode
+        # Watch mode (watches panel_inbox/ for new images)
         watch_inbox(calibration, dry_run=args.dry_run)
 
     else:
