@@ -75,7 +75,8 @@ def handle_detected_event(event: DetectedEvent, dry_run: bool = True, skip_debou
             raw_text=resolved_event.raw_text,
         )
         
-    if route.place_call and resolved_event.primary_contact:
+    # Voice calls are STRICTLY reserved for confirmed FIRE emergencies only. Faults NEVER trigger a voice call.
+    if route.place_call and resolved_event.message_type == "fire" and resolved_event.primary_contact:
         place_call(
             db_record_id=resolved_event.db_record_id,
             primary_contact=resolved_event.primary_contact,

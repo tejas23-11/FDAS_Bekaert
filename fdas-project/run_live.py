@@ -49,11 +49,79 @@ from cv.event import DetectedEvent
 from backend.pipeline import handle_detected_event
 from backend.db import init_db
 
+import re
+
 # ── Constants ─────────────────────────────────────────────────────────
 _SCRIPT_DIR = Path(__file__).resolve().parent
 INBOX_DIR = _SCRIPT_DIR / "panel_inbox"
 PROCESSED_DIR = INBOX_DIR / "processed"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff"}
+
+_ALERT_STATE_FILE = INBOX_DIR / ".active_alert_state.json"
+_current_active_alert: dict | None = None
+
+
+def _load_alert_state() -> dict | None:
+    """Load the currently active alarm state from memory or persistent disk cache."""
+    global _current_active_alert
+    if _current_active_alert is not None:
+        return _current_active_alert
+    try:
+        if _ALERT_STATE_FILE.exists():
+            with open(_ALERT_STATE_FILE, "r", encoding="utf-8") as f:
+                _current_active_alert = json.load(f)
+                return _current_active_alert
+    except Exception:
+        pass
+    _current_active_alert = None
+    return None
+
+
+def _save_alert_state(state: dict | None):
+    """Save or clear active alert state in memory and file."""
+    global _current_active_alert
+    _current_active_alert = state
+    try:
+        _ALERT_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if state is None:
+            if _ALERT_STATE_FILE.exists():
+                _ALERT_STATE_FILE.unlink(missing_ok=True)
+        else:
+            with open(_ALERT_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+    except Exception as e:
+        print(f"  [warn] Could not write alert state: {e}")
+
+
+def is_duplicate_alert(message_type: str, alert_key: str) -> bool:
+    """
+    Check if the detected alert matches the currently active alert.
+    If it is the same alert (e.g. fire/fault still actively shown on LCD),
+    we suppress duplicate SMS and calls so the user isn't spammed.
+    """
+    active = _load_alert_state()
+    if not active:
+        return False
+    if active.get("message_type") == message_type and active.get("key") == alert_key:
+        return True
+    return False
+
+
+def mark_alert_active(message_type: str, alert_key: str, summary: str = ""):
+    """Record an active alarm state so subsequent frames are suppressed."""
+    state = {
+        "message_type": message_type,
+        "key": alert_key,
+        "summary": summary,
+        "timestamp": datetime.now().isoformat(),
+    }
+    _save_alert_state(state)
+
+
+def clear_active_alert():
+    """Clear active alarm state when panel returns to normal."""
+    _save_alert_state(None)
+
 
 SEP = "=" * 65
 
@@ -352,6 +420,10 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     # ── Stage 5: Classify ────────────────────────────────────────────
     message_type = classify_message(text)
     if message_type in ("normal", "unknown"):
+        if message_type == "normal":
+            if _load_alert_state():
+                print("  [FDAS] Panel returned to NORMAL. Cleared active alert state.")
+                clear_active_alert()
         status_label = "✅ NORMAL (All Clear)" if message_type == "normal" else f"ℹ️  {message_type.upper()}"
         print(f"┌{'─' * 66}┐")
         print(f"│  FDAS PANEL STATUS: {status_label:<44}│")
@@ -368,6 +440,11 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     code = extract_code(text)
     unknown_device = False
 
+    detected_zone = ""
+    zm = re.search(r'\bZone\s*(\d+)\b', text, re.IGNORECASE)
+    if zm:
+        detected_zone = f"Zone {zm.group(1)}"
+
     if not code:
         if message_type == "fire":
             # Only treat as unknown-device fire if the panel text contains confirmed alarm banner phrases
@@ -381,6 +458,9 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
                 print(f"│  Status             │ Ignored (no device code or alarm banner)   │")
                 print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
                 return False
+        elif message_type == "fault":
+            # Real fault displayed on panel (e.g. system fault, zone fault, supply fault)
+            unknown_device = True
         else:
             print(f"┌{'─' * 66}┐")
             print(f"│  FDAS STATUS: ⚠️  {message_type.upper()} (NO DEVICE CODE FOUND)           │")
@@ -391,17 +471,8 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
             return False
 
     if code and not validate_code(code):
-        if message_type == "fire":
-            if any(h in text.lower() for h in ("first fire", "latest fire", "fire 1/", "fire 2/", "fire at")):
-                unknown_device = True
-            else:
-                print(f"┌{'─' * 66}┐")
-                print(f"│  FDAS STATUS: ℹ️  UNVALIDATED CODE IN FIRE STATE                 │")
-                print(f"├─────────────────────┬────────────────────────────────────────────┤")
-                print(f"│  Candidate Code     │ {code:<43}│")
-                print(f"│  Status             │ Ignored (code failed validation)           │")
-                print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
-                return False
+        if message_type in ("fire", "fault"):
+            unknown_device = True
         else:
             print(f"┌{'─' * 66}┐")
             print(f"│  FDAS STATUS: ⚠️  INVALID CODE: {code:<39}│")
@@ -411,25 +482,40 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
             print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
             return False
 
+    # Unique key for deduplicating repeated notifications across continuous frames
+    alert_key = code if code else (detected_zone if detected_zone else "PANEL")
+
+    # ── Deduplication: Suppress repeated alerts for persistent active alarm ──
+    if is_duplicate_alert(message_type, alert_key):
+        print(f"┌{'─' * 66}┐")
+        print(f"│  FDAS DEDUP: ⏸️  DUPLICATE {message_type.upper():<37}│")
+        print(f"├─────────────────────┬────────────────────────────────────────────┤")
+        print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
+        print(f"│  Device / Zone      │ {alert_key:<43}│")
+        print(f"│  Status             │ Active alert already notified (suppressed) │")
+        print(f"│  Action             │ 🔕 Suppressed: No repeated SMS or call     │")
+        print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
+        return True
+
     # Print clean alarm card
     icon = "🚨" if message_type == "fire" else "⚠️ "
-    action_text = "📱 SMS Dispatched | 📞 Call Placed" if message_type == "fire" else "📋 Logged to DB & Web UI"
+    action_text = "📱 SMS Dispatched | 📞 Call Placed" if message_type == "fire" else "📱 SMS Dispatched (No Call)"
     print(f"┌{'─' * 66}┐")
     print(f"│  {icon} ALARM DETECTED — {message_type.upper():<41}│")
     print(f"├─────────────────────┬────────────────────────────────────────────┤")
     print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
-    print(f"│  Device Code        │ {code or 'UNKNOWN':<43}│")
+    print(f"│  Device Code        │ {code or detected_zone or 'PANEL':<43}│")
     print(f"│  OCR Confidence     │ {confidence*100:.1f}%{' ' * 37}│")
     print(f"│  Action             │ {action_text:<43}│")
     print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
 
     # ── Stage 7: Create event + route through backend ────────────────
     if unknown_device:
-        # Fire detected but device is unknown / not in device_map
         from notify.sms_gateway import send_sms
         from notify.voice_call import place_call
         from backend.db import get_connection
-        from backend.location import _get_global_contacts
+        from backend.location import _get_global_contacts, resolve_zone_location
+        from notify.sms_gateway import extract_panel_summary
 
         contacts = _get_global_contacts("sms")
         if not contacts:
@@ -438,27 +524,23 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         call_contacts = _get_global_contacts("call")
         primary_contact = call_contacts[0] if call_contacts else contacts[0]
 
-        from notify.sms_gateway import extract_panel_summary
-        import re
-
-        detected_zone = ""
-        zm = re.search(r'\bZone\s*(\d+)\b', text, re.IGNORECASE)
-        if zm:
-            detected_zone = f"Zone {zm.group(1)}"
-
         detected_code = code if code else (detected_zone if detected_zone else "UNKNOWN")
-        from backend.location import resolve_zone_location
         loc_name = resolve_zone_location(detected_code)
         loc_line = f"\nLoc: {loc_name}" if loc_name else ""
 
         panel_summary = extract_panel_summary(text)
         time_line = f"\n{panel_summary}" if panel_summary else ""
-        fire_msg = f"FIRE ALARM\nDevice: {detected_code}{loc_line}{time_line}"
+        if message_type == "fire":
+            alert_msg = f"FIRE ALARM\nDevice: {detected_code}{loc_line}{time_line}"
+        elif message_type == "fault":
+            alert_msg = f"FAULT ALERT\nDevice: {detected_code}{loc_line}{time_line}"
+        else:
+            alert_msg = f"{message_type.upper()} ALERT\nDevice: {detected_code}{loc_line}{time_line}"
 
         for contact in contacts:
-            send_sms(contact, fire_msg, dry_run=dry_run)
+            send_sms(contact, alert_msg, dry_run=dry_run)
 
-        # Log to DB as an unknown-device fire event
+        # Log to DB as an active event
         conn = get_connection()
         cur = conn.execute(
             """
@@ -481,10 +563,11 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         event_id = cur.lastrowid
         conn.close()
 
-        # Place voice call to primary contact
-        if primary_contact:
+        # Place voice call ONLY for FIRE emergencies! NEVER for faults!
+        if message_type == "fire" and primary_contact:
             place_call(event_id, primary_contact, dry_run=dry_run)
 
+        mark_alert_active(message_type, alert_key, panel_summary)
         return True
 
     event = DetectedEvent(
@@ -495,8 +578,8 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         frame_id=0,
     )
 
-    # skip_debounce=True because we're processing a single manually-dropped image
     handle_detected_event(event, dry_run=dry_run, skip_debounce=True)
+    mark_alert_active(message_type, alert_key, text)
     return True
 
 

@@ -34,6 +34,19 @@ class TestClassify(unittest.TestCase):
     def test_classify_sounder_fault(self):
         self.assertEqual(classify_message("Sounder Fault"), "fault")
 
+    def test_classify_honeywell_fire_system_fault(self):
+        # Fault on Honeywell fire panel must NOT be misclassified as fire
+        self.assertEqual(classify_message("Honeywell Fire Alarm System - System Fault"), "fault")
+
+    def test_classify_fault_with_fire_loop(self):
+        self.assertEqual(classify_message("Fault in Fire Loop 1"), "fault")
+
+    def test_classify_fault_with_panel_header(self):
+        self.assertEqual(classify_message("Fire Alarm Panel: Fault 1/1 at 10:15 Device: MCP L1 A012"), "fault")
+
+    def test_classify_fire_detector_fault(self):
+        self.assertEqual(classify_message("Detector Fault in Fire Zone 1"), "fault")
+
     # --- supervisory ---
     def test_classify_disablement(self):
         self.assertEqual(classify_message("Disablement   1/1"), "supervisory")

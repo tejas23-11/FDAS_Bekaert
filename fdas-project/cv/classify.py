@@ -111,30 +111,82 @@ def classify_message(text: str) -> str:
     if any(kw in text_lower for kw in ("prealarm", "pre-alarm", "pre alarm")):
         return "supervisory"
 
-    # --- Guard: Honeywell idle status menu -------------------------------
-    # The home screen shows a menu: "[Status] 1 Fires (0) 2 Faults (0)..."
-    # An active fire condition switches the screen to the alarm banner:
-    # "First Fire Zone...", "Fire 1/1 at 16:07", etc.
-    if "[status]" in text_lower or re.search(r"fires?\s*[\(\[]\s*0\b", text_lower):
-        # A real fire in status mode will have non-zero in parentheses: Fires (1), Fires (2)
-        has_active_fire = re.search(r"fires?\s*[\(\[]\s*([1-9]\d*)\s*[\)\]]", text_lower)
-        has_alarm_banner = any(kw in text_lower for kw in ("first fire", "latest fire", "fire 1/", "fire 2/", "fire at"))
-        if has_active_fire or has_alarm_banner:
-            return "fire"
+    # --- Step 1: Confirmed Active Fire Alarm Banner ----------------------
+    # Active fire event indicators that definitively signify an active fire
+    active_fire_patterns = (
+        "first fire",
+        "latest fire",
+        "fire 1/",
+        "fire 2/",
+        "fire 3/",
+        "fire 4/",
+        "fire at",
+        "smoke detected",
+        "heat detected",
+        "fire alarm active",
+        "fire evacuation",
+    )
+    if any(p in text_lower for p in active_fire_patterns):
+        return "fire"
 
-        # Check for active faults
+    has_active_fire_count = re.search(r"fires?\s*[\(\[]\s*([1-9]\d*)\s*[\)\]]", text_lower)
+    if has_active_fire_count:
+        return "fire"
+
+    # --- Step 2: Honeywell idle / status menu ----------------------------
+    # If the screen is the Honeywell status menu ([Status] 1 Fires (0) 2 Faults (0) 3 Disabled (0)...)
+    if "[status]" in text_lower or re.search(r"fires?\s*[\(\[]\s*0\b", text_lower):
         has_active_fault = re.search(r"faults?\s*[\(\[]\s*([1-9]\d*)\s*[\)\]]", text_lower)
         if has_active_fault:
             return "fault"
-
-        # Otherwise status screen with 0 active fires is normal
+        has_active_dis = re.search(r"disabled\s*[\(\[]\s*([1-9]\d*)\s*[\)\]]", text_lower)
+        if has_active_dis:
+            return "supervisory"
         return "normal"
 
-    # --- Pass 1: exact substring -----------------------------------------
-    for category, keywords in _VOCABULARY.items():
-        for keyword in keywords:
-            if keyword in text_lower:
-                return category
+    # --- Step 3: Confirmed Fault Indicators ------------------------------
+    # Even if "fire" appears as part of a device/loop name ("Fire Loop 1 Fault",
+    # "Honeywell Fire Panel Fault"), presence of fault keywords means it's a FAULT, not a fire!
+    fault_keywords = (
+        "system fault",
+        "sounder fault",
+        "supply fault",
+        "earth fault",
+        "detector fault",
+        "loop fault",
+        "power fault",
+        "battery fault",
+        "open circuit",
+        "short circuit",
+        "fault 1/",
+        "fault 2/",
+        "fault at",
+        "trouble",
+    )
+    if any(kw in text_lower for kw in fault_keywords):
+        return "fault"
+
+    # Single-word "fault" or "faults" check
+    if re.search(r"\bfaults?\b", text_lower):
+        return "fault"
+
+    # --- Step 4: Supervisory / Disablement -------------------------------
+    supervisory_keywords = (
+        "disablement",
+        "delayed mode",
+        "sounders disabled",
+        "fire tx disabled",
+        "fire tx activated",
+        "supervisory",
+        "bypassed",
+        "disabled",
+    )
+    if any(kw in text_lower for kw in supervisory_keywords):
+        return "supervisory"
+
+    # --- Step 5: Isolated fire keywords ----------------------------------
+    if re.search(r"\b(fire|smoke|heat|mcp|manual call point)\b", text_lower):
+        return "fire"
 
     # --- Pass 2: fuzzy word match ----------------------------------------
     words = text_lower.split()
