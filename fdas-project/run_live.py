@@ -30,11 +30,23 @@ import argparse
 import json
 import logging
 import os
+import platform
 import shutil
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+# ── ARM (Raspberry Pi) segfault prevention ────────────────────────────
+# PaddlePaddle's C++ core reads these at MODULE LOAD TIME.
+# They MUST be set BEFORE any import that could pull in paddle.
+_machine = platform.machine().lower()
+if _machine.startswith("aarch64") or _machine.startswith("arm"):
+    os.environ["FLAGS_use_mkldnn"] = "0"
+    os.environ["FLAGS_use_xdnn"] = "0"
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
 
 # Silence all third-party debug and info loggers (ppocr, paddlex, urllib3, etc.)
 logging.disable(logging.INFO)
