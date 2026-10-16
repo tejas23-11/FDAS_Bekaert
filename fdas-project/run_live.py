@@ -93,25 +93,50 @@ def _save_alert_state(state: dict | None):
         print(f"  [warn] Could not write alert state: {e}")
 
 
-def is_duplicate_alert(message_type: str, alert_key: str) -> bool:
+def is_duplicate_alert(message_type: str, alert_key: str, detected_zone: str = "") -> bool:
     """
-    Check if the detected alert matches the currently active alert.
-    If it is the same alert (e.g. fire/fault still actively shown on LCD),
-    we suppress duplicate SMS and calls so the user isn't spammed.
+    Check if the detected alert matches or is covered by the currently active alarm.
+    Prevents OCR fluctuations (e.g. oscillating between 'UNKNOWN', 'Zone 1', and 'L1 A053')
+    from repeatedly spamming SMS and placing repetitive phone calls.
     """
     active = _load_alert_state()
     if not active:
         return False
-    if active.get("message_type") == message_type and active.get("key") == alert_key:
+
+    active_type = active.get("message_type")
+    # If a fault is active and a fire breaks out, that is an escalation -> not duplicate
+    if active_type != message_type:
+        return False
+
+    active_key = active.get("key", "")
+    active_zone = active.get("zone", "")
+
+    # 1. Exact match on alert key
+    if active_key == alert_key:
         return True
+
+    # 2. If an active alarm is already recorded, any generic / fallback detection
+    #    (e.g. 'PANEL', 'UNKNOWN', '') for the same alarm type is a duplicate.
+    if alert_key in ("PANEL", "UNKNOWN", ""):
+        return True
+
+    # 3. If the active alarm was recorded as generic or fallback, do not re-alert on same panel alarm
+    if active_key in ("PANEL", "UNKNOWN", ""):
+        return True
+
+    # 4. If both have zones and they are the same zone
+    if detected_zone and active_zone and detected_zone == active_zone:
+        return True
+
     return False
 
 
-def mark_alert_active(message_type: str, alert_key: str, summary: str = ""):
+def mark_alert_active(message_type: str, alert_key: str, summary: str = "", zone: str = ""):
     """Record an active alarm state so subsequent frames are suppressed."""
     state = {
         "message_type": message_type,
         "key": alert_key,
+        "zone": zone,
         "summary": summary,
         "timestamp": datetime.now().isoformat(),
     }
@@ -392,6 +417,9 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     roi_cfg = calibration.get("screen_roi", {})
     rw, rh = roi_cfg.get("width", 0), roi_cfg.get("height", 0)
     roi = frame if (rw == 0 or rh == 0) else crop_screen_region(frame, roi_cfg)
+    # Safety: if ROI is out of bounds or empty, fall back to full frame
+    if roi is None or not hasattr(roi, 'shape') or roi.size == 0 or roi.shape[0] < 50 or roi.shape[1] < 50:
+        roi = frame
 
     # ── Stage 3+4: OCR (PaddleOCR primary, Tesseract fallback) ─────────
     text = ""
@@ -441,7 +469,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     unknown_device = False
 
     detected_zone = ""
-    zm = re.search(r'\bZone\s*(\d+)\b', text, re.IGNORECASE)
+    zm = re.search(r'(?:\bZone|#Zones?)\s*[:#-]?\s*(\d+)\b', text, re.IGNORECASE)
     if zm:
         detected_zone = f"Zone {zm.group(1)}"
 
@@ -486,7 +514,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     alert_key = code if code else (detected_zone if detected_zone else "PANEL")
 
     # ── Deduplication: Suppress repeated alerts for persistent active alarm ──
-    if is_duplicate_alert(message_type, alert_key):
+    if is_duplicate_alert(message_type, alert_key, detected_zone):
         print(f"┌{'─' * 66}┐")
         print(f"│  FDAS DEDUP: ⏸️  DUPLICATE {message_type.upper():<37}│")
         print(f"├─────────────────────┬────────────────────────────────────────────┤")
@@ -567,7 +595,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         if message_type == "fire" and primary_contact:
             place_call(event_id, primary_contact, dry_run=dry_run)
 
-        mark_alert_active(message_type, alert_key, panel_summary)
+        mark_alert_active(message_type, alert_key, panel_summary, zone=detected_zone)
         return True
 
     event = DetectedEvent(
@@ -579,7 +607,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     )
 
     handle_detected_event(event, dry_run=dry_run, skip_debounce=True)
-    mark_alert_active(message_type, alert_key, text)
+    mark_alert_active(message_type, alert_key, text, zone=detected_zone)
     return True
 
 

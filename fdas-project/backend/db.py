@@ -59,6 +59,24 @@ def init_db():
             (json.dumps(default_call), datetime.now(timezone.utc).isoformat()),
         )
 
+    # Seed default Bekaert device map if empty
+    try:
+        count_row = conn.execute("SELECT COUNT(*) as cnt FROM device_map").fetchone()
+        if not count_row or count_row["cnt"] == 0:
+            default_devices = [
+                ("L1 A053", "B Drawing Area - ABV B100 MC", "B Drawing Area", "SD (smoke detector)", json.dumps(default_sms)),
+                ("L2 A138", "Utility Room - BD - Zone 1", "Zone 1", "MCP (manual call point)", json.dumps(default_sms)),
+                ("L1 A101", "1ST AID RM", "Zone 1", "MCP (manual call point)", json.dumps(default_sms)),
+                ("L1/101", "1ST AID RM", "Zone 1", "MCP (manual call point)", json.dumps(default_sms)),
+                ("L1/53", "B Drawing Area - ABV B100 MC", "B Drawing Area", "SD (smoke detector)", json.dumps(default_sms)),
+            ]
+            conn.executemany(
+                "INSERT OR IGNORE INTO device_map (device_code, location_name, zone, device_type, contacts) VALUES (?, ?, ?, ?, ?)",
+                default_devices,
+            )
+    except Exception as e:
+        print(f"  [warn] Could not auto-seed device_map: {e}")
+
     conn.commit()
     conn.close()
 

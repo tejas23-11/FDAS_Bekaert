@@ -12,15 +12,36 @@ def _serial_port():
     return get_serial_connection()
 
 ENABLE_VOICE_CALL = True  # Enabled for live emergency calls
+CALL_COOLDOWN_SECONDS = 300  # 5 minutes minimum between calls per number
+_LAST_CALL_TIMES: dict[str, float] = {}
 
 
 def place_call(db_record_id: int, primary_contact: str, dry_run: bool = True) -> bool:
     """
     Places a blank voice call (ring-only, no TTS) to primary_contact.
+    Guarded with a cooldown to ensure emergency calls are never placed repeatedly in a loop.
     """
+    import time
+    clean_phone = "".join(c for c in primary_contact if c.isdigit() or c == "+")
+    now = time.time()
+    last_called = _LAST_CALL_TIMES.get(clean_phone, 0)
+
+    if not dry_run and (now - last_called) < CALL_COOLDOWN_SECONDS:
+        remaining = int(CALL_COOLDOWN_SECONDS - (now - last_called))
+        print(f"[notify] [COOLDOWN] Voice call to {clean_phone} SUPPRESSED (cooldown active: {remaining}s remaining)")
+        return False
+
+    if not dry_run:
+        _LAST_CALL_TIMES[clean_phone] = now
+
     if dry_run:
         print(f"[notify:DRY-RUN] CALL -> {primary_contact} (ring-only)")
         status = "placed"
+        conn = get_connection()
+        conn.execute("UPDATE events SET call_status = ? WHERE id = ?", (status, db_record_id))
+        conn.commit()
+        conn.close()
+        return True
     elif not ENABLE_VOICE_CALL:
         print(f"[notify] Voice call temporarily DISABLED for testing (skipping call to {primary_contact})")
         status = "disabled_for_test"

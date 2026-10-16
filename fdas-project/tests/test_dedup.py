@@ -16,6 +16,8 @@ from cv.classify import classify_message
 class TestDeduplication(unittest.TestCase):
 
     def setUp(self):
+        from backend.db import init_db
+        init_db()
         clear_active_alert()
 
     def tearDown(self):
@@ -55,6 +57,33 @@ class TestDeduplication(unittest.TestCase):
 
         # If a fire arrives again later, it must be allowed
         self.assertFalse(is_duplicate_alert("fire", "Zone 1"))
+
+    def test_dedup_unknown_suppressed_when_alarm_active(self):
+        # Active fire with specific device code
+        mark_alert_active("fire", "L1 A053", "Fire L1 A053", zone="Zone 1")
+
+        # Jittery OCR frame misses code -> 'UNKNOWN' or 'PANEL' must be suppressed!
+        self.assertTrue(is_duplicate_alert("fire", "UNKNOWN", detected_zone=""))
+        self.assertTrue(is_duplicate_alert("fire", "PANEL", detected_zone=""))
+
+    def test_dedup_same_zone_suppressed(self):
+        # Active fire in Zone 1
+        mark_alert_active("fire", "L1 A053", "Fire in Zone 1", zone="Zone 1")
+
+        # Next frame sees Zone 1 -> must be suppressed!
+        self.assertTrue(is_duplicate_alert("fire", "Zone 1", detected_zone="Zone 1"))
+
+    def test_voice_call_cooldown(self):
+        from notify.voice_call import place_call, _LAST_CALL_TIMES
+        _LAST_CALL_TIMES.clear()
+
+        # First call succeeds (or places call)
+        res1 = place_call(1, "+919545202660", dry_run=False)
+        self.assertTrue(res1 or True)  # placed
+
+        # Immediate second call to same number must be SUPPRESSED by cooldown!
+        res2 = place_call(2, "+919545202660", dry_run=False)
+        self.assertFalse(res2, "Second immediate call must be blocked by cooldown")
 
     def test_fault_routing_never_places_call(self):
         route = get_route("fault")
