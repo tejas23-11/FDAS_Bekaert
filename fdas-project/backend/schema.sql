@@ -43,3 +43,13 @@ CREATE TABLE IF NOT EXISTS system_health (
 );
 
 CREATE INDEX IF NOT EXISTS idx_health_check ON system_health(check_name, checked_at);
+
+-- Global notification contact lists (step 14: Operator UI).
+-- Separate lists for SMS recipients and Call recipients, managed from
+-- the dashboard.  The pipeline checks these first; falls back to the
+-- per-device contacts in device_map if no global list is configured.
+CREATE TABLE IF NOT EXISTS notification_contacts (
+    list_type   TEXT PRIMARY KEY,             -- 'sms' | 'call'
+    contacts    TEXT NOT NULL DEFAULT '[]',   -- JSON array of phone numbers
+    updated_at  TEXT                          -- ISO 8601 UTC
+);

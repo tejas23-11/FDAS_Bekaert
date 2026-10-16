@@ -1,0 +1,17 @@
+[Unit]
+Description=FDAS False Alarm Button — GPIO monitor for cancellation SMS
+After=network.target fdas-pipeline.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/pi/FDAS_Bekaert/fdas-project
+ExecStart=/home/pi/FDAS_Bekaert/fdas-project/venv/bin/python3 -m hardware.false_alarm_button
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/pi/FDAS_Bekaert/fdas-project/logs/false_alarm_button.log
+StandardError=append:/home/pi/FDAS_Bekaert/fdas-project/logs/false_alarm_button.log
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

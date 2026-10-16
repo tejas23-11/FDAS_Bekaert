@@ -1,0 +1,17 @@
+[Unit]
+Description=FDAS Operator Dashboard — Web UI
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/FDAS_Bekaert/fdas-project
+ExecStart=/home/pi/FDAS_Bekaert/fdas-project/venv/bin/python3 -m ui.app
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/pi/FDAS_Bekaert/fdas-project/logs/ui.log
+StandardError=append:/home/pi/FDAS_Bekaert/fdas-project/logs/ui.log
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

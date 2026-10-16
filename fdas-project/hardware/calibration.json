@@ -1,0 +1,18 @@
+{
+  "camera": {
+    "device_index": 0,
+    "resolution": [1920, 1080],
+    "rotation": 90,
+    "capture_fps": 1
+  },
+  "screen_roi": {
+    "x": 50,
+    "y": 1100,
+    "width": 830,
+    "height": 520,
+    "change_threshold": 8.0
+  },
+  "debounce": {
+    "required_consecutive_frames": 2
+  }
+}

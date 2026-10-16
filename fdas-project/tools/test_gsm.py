@@ -1,0 +1,227 @@
+"""
+GSM SIM7600 Diagnostic and Test Tool.
+
+Tests serial connection, AT commands, SIM card status, network signal,
+and optionally sends a real test SMS to verify communication.
+
+Usage (on the Pi):
+    # 1. Quick diagnostic (checks connection, SIM, and signal):
+    python3 -m tools.test_gsm
+
+    # 2. Test sending a real SMS to your phone number:
+    python3 -m tools.test_gsm --phone +919876543210
+
+    # 3. Specify a different serial port (default: /dev/ttyUSB2):
+    python3 -m tools.test_gsm --port /dev/ttyUSB3
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import sys
+import time
+from pathlib import Path
+
+# Add project root to sys.path
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from notify.gsm_config import GSM_SERIAL_PORT, GSM_BAUD_RATE, GSM_TIMEOUT
+
+
+def send_at_command(ser, cmd: str, wait_secs: float = 0.5) -> str:
+    """Send an AT command and return the decoded response."""
+    ser.reset_input_buffer()
+    ser.write((cmd + "\r\n").encode())
+    time.sleep(wait_secs)
+    resp = ser.read(ser.in_waiting or 1024).decode(errors="replace").strip()
+    return resp
+
+
+def diagnose_gsm(port: str | None = None, test_phone: str | None = None, test_call: str | None = None) -> bool:
+    import serial
+
+    # Detect available USB serial ports
+    usb_ports = sorted(glob.glob("/dev/ttyUSB*"))
+    print("=" * 60)
+    print("  FDAS GSM SIM7600 Diagnostic Tool")
+    print("=" * 60)
+    print(f"  Detected USB ports: {usb_ports if usb_ports else 'NONE FOUND'}")
+
+    target_port = port or GSM_SERIAL_PORT
+    print(f"  Attempting connection on: {target_port} ({GSM_BAUD_RATE} baud)")
+
+    if not Path(target_port).exists():
+        print(f"\n  [FAIL] Port {target_port} does not exist.")
+        if usb_ports:
+            print(f"         Try one of the detected ports: {usb_ports}")
+        else:
+            print("         Is the SIM7600 USB cable firmly plugged into the Pi?")
+            print("         Check with: lsusb")
+        return False
+
+    try:
+        ser = serial.Serial(target_port, GSM_BAUD_RATE, timeout=GSM_TIMEOUT)
+    except Exception as e:
+        print(f"\n  [FAIL] Could not open {target_port}: {e}")
+        print("         Make sure no other process (like another script) is using the port.")
+        return False
+
+    try:
+        # Cancel any pending SMS prompt from a previously aborted script
+        ser.write(b"\x1B\r\n")
+        time.sleep(0.3)
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+
+        # 1. Basic AT handshake
+        resp = send_at_command(ser, "AT")
+        if "OK" not in resp:
+            # Retry once
+            time.sleep(0.5)
+            resp = send_at_command(ser, "AT")
+        if "OK" not in resp:
+            print(f"  [FAIL] Module not responding to AT commands. (Got: {resp!r})")
+            return False
+        print("  [OK] AT Handshake: SUCCESS (Module responsive)")
+
+        # 2. Check Module Identity / Model
+        resp = send_at_command(ser, "AT+CGMM")
+        model = [l for l in resp.splitlines() if l and "OK" not in l and "AT+" not in l]
+        print(f"  [OK] Modem Model: {model[0] if model else 'SIMCOM'}")
+
+        # 3. Check SIM Card Status
+        resp = send_at_command(ser, "AT+CPIN?")
+        if "READY" in resp:
+            print("  [OK] SIM Card: READY (Detected and unlocked)")
+        else:
+            print(f"  [WARN] SIM Card status: {resp}")
+            print("         Check if SIM card is inserted properly or requires a PIN.")
+
+        # 4. Check Signal Quality (CSQ)
+        resp = send_at_command(ser, "AT+CSQ")
+        # Format: +CSQ: <rssi>,<ber>
+        csq_val = None
+        for line in resp.splitlines():
+            if "+CSQ:" in line:
+                try:
+                    csq_val = int(line.split(":")[1].split(",")[0].strip())
+                except Exception:
+                    pass
+        if csq_val is not None:
+            if csq_val == 99:
+                print("  [WARN] Signal Strength: 99 (Not known or not detectable — check antenna!)")
+            elif csq_val < 10:
+                print(f"  [WARN] Signal Strength: {csq_val}/31 (Weak signal)")
+            else:
+                print(f"  [OK] Signal Strength: {csq_val}/31 (Good signal)")
+        else:
+            print(f"  [OK] Signal response: {resp.replace(chr(10), ' ')}")
+
+        # 5. Check Network Registration
+        resp = send_at_command(ser, "AT+CREG?")
+        # +CREG: <n>,<stat> (1=registered home, 5=registered roaming)
+        registered = any(x in resp for x in ("0,1", "0,5", ",1", ",5"))
+        if registered:
+            print("  [OK] Cellular Network: REGISTERED")
+        else:
+            print(f"  [WARN] Cellular Network registration: {resp}")
+
+        # 6. Check Operator Name
+        resp = send_at_command(ser, 'AT+COPS?')
+        for line in resp.splitlines():
+            if "+COPS:" in line:
+                print(f"  [OK] Operator: {line.strip()}")
+
+        # 7. Optional: Send test SMS
+        if test_phone:
+            print(f"\n  [..] Sending test SMS to: {test_phone}...")
+            # Set text mode, GSM charset, CSMP, CGSMS
+            send_at_command(ser, "AT+CMGF=1")
+            send_at_command(ser, 'AT+CSCS="GSM"')
+            send_at_command(ser, "AT+CSMP=17,167,0,0")
+            send_at_command(ser, "AT+CGSMS=1")
+
+            ser.reset_input_buffer()
+            ser.write(f'AT+CMGS="{test_phone}"\r'.encode())
+
+            # Wait up to 3 seconds for '>' prompt
+            prompt_found = False
+            start_t = time.time()
+            buf = b""
+            while time.time() - start_t < 3.0:
+                if ser.in_waiting:
+                    buf += ser.read(ser.in_waiting)
+                    if b">" in buf:
+                        prompt_found = True
+                        break
+                time.sleep(0.05)
+
+            if not prompt_found:
+                print(f"  [FAIL] Modem did not provide '>' prompt! Output: {buf.decode(errors='replace')}")
+                return False
+
+            # Write message body + Ctrl+Z (\x1A)
+            test_msg = "FDAS System Test: SIM7600 GSM module is working properly!"
+            ser.write(test_msg.encode() + b"\x1A")
+            print("  [..] Waiting for network confirmation...")
+
+            resp_buf = b""
+            start_t = time.time()
+            while time.time() - start_t < 15.0:
+                if ser.in_waiting:
+                    resp_buf += ser.read(ser.in_waiting)
+                    if b"+CMGS:" in resp_buf or b"ERROR" in resp_buf:
+                        break
+                time.sleep(0.1)
+
+            sms_resp = resp_buf.decode(errors="replace")
+            if "+CMGS:" in sms_resp:
+                print(f"  [OK] SMS SENT SUCCESSFULLY to {test_phone}!")
+            else:
+                print(f"  [FAIL] SMS send failed. Response: {sms_resp}")
+                ceer_resp = send_at_command(ser, "AT+CEER")
+                print(f"         Extended error: {ceer_resp}")
+        # 8. Optional: Place test voice call
+        if test_call:
+            clean_call = "".join(c for c in test_call if c.isdigit() or c == "+")
+            print(f"\n  [..] Placing test voice call (ring-only) to: {clean_call}...")
+            ser.reset_input_buffer()
+            ser.write(f'ATD{clean_call};\r'.encode())
+            time.sleep(2)
+            call_resp = ser.read(ser.in_waiting or 1024).decode(errors="replace")
+            print(f"  [..] Modem dial response: {call_resp.strip()}")
+            if "ERROR" in call_resp or "NO CARRIER" in call_resp:
+                print(f"  [FAIL] Call failed: {call_resp.strip()}")
+                return False
+            else:
+                print("  [OK] Call placed! Ringing for 12 seconds...")
+                time.sleep(12)
+                ser.write(b'ATH\r')
+                time.sleep(1)
+                print("  [OK] Hung up successfully.")
+
+        print("\n" + "=" * 60)
+        print("  GSM DIAGNOSTIC PASSED — Module is ready for live alerts!")
+        print("=" * 60)
+        return True
+
+    finally:
+        ser.close()
+
+
+def diagnose_gsm_cli():
+    parser = argparse.ArgumentParser(description="FDAS GSM SIM7600 Diagnostic Tool")
+    parser.add_argument("--port", default=None, help=f"Serial port (default: {GSM_SERIAL_PORT})")
+    parser.add_argument("--phone", default=None, help="Send a real test SMS to this phone number (e.g. +91XXXXXXXXXX)")
+    parser.add_argument("--call", default=None, help="Place a real test voice call to this phone number (e.g. +91XXXXXXXXXX)")
+    args = parser.parse_args()
+
+    success = diagnose_gsm(port=args.port, test_phone=args.phone, test_call=args.call)
+    sys.exit(0 if success else 1)
+
+
+if __name__ == "__main__":
+    diagnose_gsm_cli()

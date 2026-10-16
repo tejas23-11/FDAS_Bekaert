@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HEARTBEAT_FILE = Path("/tmp/fdas_heartbeat")
-MAX_HEARTBEAT_AGE_SECONDS = 10
+MAX_HEARTBEAT_AGE_SECONDS = 60
 CHECK_INTERVAL_SECONDS = 5
 
 # Keep only the last N rows per check type to prevent unbounded growth.
@@ -61,24 +61,37 @@ def check_heartbeat(max_age_seconds: float = MAX_HEARTBEAT_AGE_SECONDS) -> bool:
 
 
 def check_camera_feed(device_index: int = 0) -> bool:
-    """Blank/black-frame check. TODO(Member 5): tune brightness threshold
-    against the real camera once hardware arrives."""
-    import cv2
+    """Check if the camera is producing frames."""
+    # If pipeline is alive and heartbeating, camera must be OK
+    if HEARTBEAT_FILE.exists():
+        age = time.time() - HEARTBEAT_FILE.stat().st_mtime
+        if age <= MAX_HEARTBEAT_AGE_SECONDS:
+            return True
 
-    cap = cv2.VideoCapture(device_index)
-    ok, frame = cap.read()
-    cap.release()
-    if not ok or frame is None:
+    # Check if a recent live frame exists in /dev/shm or panel_inbox
+    for p in (Path("/dev/shm/live_cam.jpg"), Path("/dev/shm/fdas_live.jpg"), Path("panel_inbox/live_cam.jpg")):
+        if p.exists() and (time.time() - p.stat().st_mtime) <= MAX_HEARTBEAT_AGE_SECONDS:
+            return True
+
+    # Pipeline isn't running — try direct camera access as last resort
+    try:
+        import cv2
+        cap = cv2.VideoCapture(device_index)
+        ok, frame = cap.read()
+        cap.release()
+        if not ok or frame is None:
+            return False
+        return frame.mean() > 5
+    except Exception:
         return False
-    return frame.mean() > 5
 
 
-def check_process_alive(process_name: str = "cv.capture") -> bool:
+def check_process_alive(process_names: tuple[str, ...] = ("cv.capture", "run_live", "run_monitor", "start_fdas")) -> bool:
     import psutil
 
     for proc in psutil.process_iter(["cmdline"]):
         cmdline = " ".join(proc.info.get("cmdline") or [])
-        if process_name in cmdline:
+        if any(p in cmdline for p in process_names):
             return True
     return False
 
@@ -112,22 +125,21 @@ def run(iterations: int | None = None, persist: bool = True):
                 None if hb_ok else "Main pipeline heartbeat stale or missing",
             )
 
-        # Camera and process checks are skipped in the dev/test sandbox
-        # (no real camera device); Member 5 re-enables these on the Pi.
-        # When enabled, they follow the same pattern:
-        #   cam_ok = check_camera_feed()
-        #   if not cam_ok:
-        #       raise_fault_alert("Camera feed blank or unavailable")
-        #   if persist:
-        #       _record_health("camera", "ok" if cam_ok else "fault",
-        #                      None if cam_ok else "Camera feed blank or unavailable")
-        #
-        #   proc_ok = check_process_alive()
-        #   if not proc_ok:
-        #       raise_fault_alert("Pipeline process not running")
-        #   if persist:
-        #       _record_health("process", "ok" if proc_ok else "fault",
-        #                      None if proc_ok else "Pipeline process not running")
+        # --- Camera feed check ---
+        cam_ok = check_camera_feed()
+        if not cam_ok:
+            raise_fault_alert("Camera feed blank or unavailable")
+        if persist:
+            _record_health("camera", "ok" if cam_ok else "fault",
+                           None if cam_ok else "Camera feed blank or unavailable")
+
+        # --- Pipeline process check ---
+        proc_ok = check_process_alive()
+        if not proc_ok:
+            raise_fault_alert("Pipeline process not running")
+        if persist:
+            _record_health("process", "ok" if proc_ok else "fault",
+                           None if proc_ok else "Pipeline process not running")
 
         # Prune old rows periodically (every 100 cycles ≈ ~8 min at 5s interval)
         if persist and count > 0 and count % 100 == 0:

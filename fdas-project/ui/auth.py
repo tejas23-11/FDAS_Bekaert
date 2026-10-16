@@ -81,7 +81,7 @@ def _set_password():
         print("Passwords do not match.")
         sys.exit(1)
 
-    new_hash = generate_password_hash(password)
+    new_hash = generate_password_hash(password, method="pbkdf2:sha256")
 
     # Read existing config, replace or append the hash line.
     lines: list[str] = []

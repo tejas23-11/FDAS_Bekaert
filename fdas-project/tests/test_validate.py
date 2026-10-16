@@ -46,6 +46,15 @@ class TestExtractCode(unittest.TestCase):
         """OCR may return mixed case."""
         self.assertEqual(extract_code("l1 a053"), "L1 A053")
 
+    def test_no_space_long_form(self):
+        """Panel LCD without space between loop and address."""
+        self.assertEqual(extract_code("L1A101"), "L1 A101")
+
+    def test_mcp_attached_short_form(self):
+        """Real panel text with prefix touching code."""
+        text = "First Fire Zone 1 Latest Fire Zone 1 09:57#Zones Fire 1/1 09:57 Zone1 at 09:57 Device MCP 1ST AID RM MCPL1/101 L1A101"
+        self.assertEqual(extract_code(text), "L1 A101")
+
 
 class TestValidateCode(unittest.TestCase):
 

@@ -1,15 +1,18 @@
-"""Excel parsing and validation for device map uploads.
+"""Excel and CSV parsing for device map uploads.
 
 Pure-logic module — no Flask dependency, fully unit-testable.
 
-Expected columns: device_code, location_name, zone, device_type, contacts
-- contacts can be a JSON array string (e.g. '["+1234567890"]') or
-  comma-separated phone numbers (e.g. '+1234567890, +0987654321').
+Supports:
+  1. Simple 2-column CSV or Excel (ID/Code, Location) — recommended & simplest format!
+  2. Standard 5-column FDAS template (device_code, location_name, zone, device_type, contacts)
+  3. Bekaert multi-sheet Appliance Location format
 """
 
 from __future__ import annotations
 
+import csv
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,7 +36,7 @@ class ParseError:
 
 @dataclass
 class ParseResult:
-    """Complete result of parsing a device map spreadsheet."""
+    """Complete result of parsing a device map spreadsheet or CSV."""
     valid_rows: list[ParsedRow] = field(default_factory=list)
     errors: list[ParseError] = field(default_factory=list)
 
@@ -47,82 +50,299 @@ class ParseResult:
 
 REQUIRED_COLUMNS = {"device_code", "location_name", "zone", "device_type", "contacts"}
 
+# Device type abbreviation -> full name mapping
+_DEVICE_TYPES = {
+    "HD":  "HD (heat detector)",
+    "SD":  "SD (smoke detector)",
+    "MD":  "MD (multi-detector)",
+    "MCP": "MCP (manual call point)",
+    "BS":  "BS (beam smoke detector)",
+    "BMS": "BMS (building management system)",
+    "SB":  "SB (sounder beacon)",
+}
+
+
+def _extract_device_code(address: str) -> str | None:
+    """Extract canonical device code (e.g. 'L1 A101') from panel address string.
+
+    Handles:
+      - 'L1/101', 'L1 / 101', 'L1/01', 'L1/1'
+      - 'MCPL1/101', 'SDL1/53' (attached prefixes)
+      - 'L1A101', 'L1 A101', 'L1 A053'
+      - 'L1-101', 'L1 - 101'
+    """
+    if not address:
+        return None
+    addr = str(address).strip()
+
+    # 1. Match L<loop> / <num> or L<loop> - <num> (e.g. L1/101, MCPL1/101, L1-101)
+    m = re.search(r'L(\d+)\s*[/\\-]\s*([A-Za-z]?\s*\d{1,3})\b', addr, re.IGNORECASE)
+    if m:
+        loop = m.group(1)
+        raw_num = re.sub(r'^[A-Za-z\s]+', '', m.group(2))
+        if raw_num.isdigit():
+            return f"L{loop} A{raw_num.zfill(3)}"
+
+    # 2. Match canonical L<loop> A<num> or L<loop><alpha><num> (e.g. L1A101, L1 A101)
+    m = re.search(r'L(\d+)\s*([A-Za-z])\s*(\d{1,3})\b', addr, re.IGNORECASE)
+    if m:
+        loop = m.group(1)
+        num = m.group(3).zfill(3)
+        return f"L{loop} A{num}"
+
+    # 3. Match address with loop and 2-3 digit number separated by space
+    m = re.search(r'\bL(\d+)\s+(\d{1,3})\b', addr, re.IGNORECASE)
+    if m:
+        loop = m.group(1)
+        num = m.group(2).zfill(3)
+        return f"L{loop} A{num}"
+
+    return None
+
+
+def _extract_device_type(address: str) -> str:
+    """Infer device type from abbreviation in the address string."""
+    addr_upper = f" {str(address).upper()} "
+    for abbr in sorted(_DEVICE_TYPES.keys(), key=len, reverse=True):
+        if f" {abbr} " in addr_upper or addr_upper.strip().endswith(f" {abbr}"):
+            return _DEVICE_TYPES[abbr]
+    return "Unknown"
+
 
 def _parse_contacts(raw: str) -> list[str]:
     """Parse a contacts cell — accepts JSON array or comma-separated."""
-    raw = raw.strip()
+    raw = str(raw).strip()
     if not raw:
         return []
 
-    # Try JSON first
     if raw.startswith("["):
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, list):
-                return [str(c).strip() for c in parsed if str(c).strip()]
+                return ["".join(c for c in str(item).strip() if c.isdigit() or c == "+") for item in parsed if item]
         except json.JSONDecodeError:
             pass
 
-    # Fallback: comma-separated
-    return [c.strip() for c in raw.split(",") if c.strip()]
+    numbers = []
+    for c in raw.split(","):
+        cleaned = "".join(ch for ch in c.strip() if ch.isdigit() or ch == "+")
+        if cleaned:
+            numbers.append(cleaned)
+    return numbers
 
 
-def parse_device_map(file_path: str | Path) -> ParseResult:
-    """Parse a .xlsx file and return validated rows + errors.
+def _parse_2col_data(rows: list[list[str]], default_contacts: list[str]) -> ParseResult:
+    """Parse flexible column data — auto-detects code and location columns by header name.
 
-    Raises ValueError if openpyxl can't open the file or required columns
-    are missing from the header row.
+    Handles:
+      - Plain 2-col: ID, Location
+      - Sir's 3-col: Sr. No., Address In Fire Panel, Location (Text To Send on SMS)
+      - Any order as long as headers contain keywords
     """
-    import openpyxl
+    result = ParseResult()
+    if not rows:
+        return result
 
-    wb = openpyxl.load_workbook(str(file_path), read_only=True, data_only=True)
+    header = [c.strip().lower() for c in rows[0]]
+
+    # Detect code column: contains 'address', 'code', 'device', 'id', 'sensor'
+    code_col = None
+    loc_col = None
+    for i, h in enumerate(header):
+        if code_col is None and any(k == h or k in h for k in ("address", "device_code", "device", "code", "sensor", "id")):
+            code_col = i
+        elif loc_col is None and any(k in h for k in ("text to send", "location", "sms", "area", "room", "name")):
+            loc_col = i
+
+    # If only one was matched, assign the other
+    if code_col is not None and loc_col is None:
+        loc_col = 1 if code_col == 0 and len(header) > 1 else (2 if len(header) > 2 else 0)
+    elif loc_col is not None and code_col is None:
+        code_col = 0 if loc_col == 1 and len(header) > 1 else (1 if len(header) > 1 else 0)
+
+    # Fallback: if no header matched at all (no header row or plain positional)
+    if code_col is None and loc_col is None:
+        # Check if first row looks like data (not a header)
+        if _extract_device_code(rows[0][0]) is not None:
+            code_col, loc_col, start_row = 0, 1, 0
+        else:
+            # Assume first col is sr.no/id, second is code, third is location
+            code_col = 1 if len(rows[0]) > 2 else 0
+            loc_col = 2 if len(rows[0]) > 2 else 1
+            start_row = 1
+    else:
+        start_row = 1
+
+    seen = set()
+    for row_num, row in enumerate(rows[start_row:], start=start_row + 1):
+        if code_col is None or code_col >= len(row):
+            continue
+        raw_code = str(row[code_col]).strip()
+        if not raw_code or raw_code.isdigit():
+            continue
+
+        raw_loc = str(row[loc_col]).strip() if loc_col is not None and loc_col < len(row) else "Unknown location"
+
+        canon_code = _extract_device_code(raw_code) or raw_code.upper()
+        if not canon_code or canon_code in seen:
+            continue
+        seen.add(canon_code)
+
+        device_type = _extract_device_type(raw_code)
+
+        result.valid_rows.append(ParsedRow(
+            device_code=canon_code,
+            location_name=raw_loc or "Unknown location",
+            zone=raw_loc or "Unknown zone",
+            device_type=device_type,
+            contacts=default_contacts,
+        ))
+
+    return result
+
+
+def _parse_csv_file(file_path: Path | str, default_contacts: list[str]) -> ParseResult:
+    """Parse a CSV file (auto-detects 2-column or standard 5-column format)."""
+    with open(str(file_path), "r", encoding="utf-8-sig", errors="replace") as f:
+        reader = csv.reader(f)
+        rows = [row for row in reader if row and any(str(c).strip() for c in row)]
+
+    if not rows:
+        raise ValueError("CSV file is empty")
+
+    header = [str(c).strip().lower() for c in rows[0]]
+
+    # If it has the standard 5 columns
+    if REQUIRED_COLUMNS.issubset(set(header)):
+        col_idx = {name: header.index(name) for name in REQUIRED_COLUMNS}
+        result = ParseResult()
+        for row_num, row in enumerate(rows[1:], start=2):
+            try:
+                raw = {col: str(row[col_idx[col]]).strip() if col_idx[col] < len(row) else "" for col in REQUIRED_COLUMNS}
+                for fld in ("device_code", "location_name", "zone", "device_type"):
+                    if not raw[fld]:
+                        raise ValueError(f"missing {fld}")
+                contacts = _parse_contacts(raw["contacts"])
+                if not contacts:
+                    raise ValueError("contacts list is empty")
+                canon_code = _extract_device_code(raw["device_code"]) or raw["device_code"].upper()
+                result.valid_rows.append(ParsedRow(
+                    device_code=canon_code,
+                    location_name=raw["location_name"],
+                    zone=raw["zone"],
+                    device_type=raw["device_type"],
+                    contacts=contacts,
+                ))
+            except Exception as e:
+                result.errors.append(ParseError(row_number=row_num, reason=str(e)))
+        return result
+
+    # Otherwise, treat as simple 2-column format (Code, Location)
+    return _parse_2col_data(rows, default_contacts)
+
+
+def parse_device_map(file_path: str | Path, default_contacts: list[str] | None = None) -> ParseResult:
+    """Parse a .csv or .xlsx file and return validated rows + errors.
+
+    Supports:
+      - 2-column CSV/Excel (ID, Location)
+      - Standard 5-column FDAS template
+      - Bekaert Appliance_location format
+    """
+    path = Path(file_path)
+    if default_contacts is None:
+        default_contacts = ["+919545202660", "+919730814745", "+919561515546", "+919172319233"]
+
+    # Read raw bytes first — detect xlsx by magic header (PK\x03\x04) even if named .csv
+    raw_bytes = path.read_bytes()
+    is_xlsx_bytes = raw_bytes[:4] == b"PK\x03\x04"
+
+    if path.suffix.lower() == ".csv" and not is_xlsx_bytes:
+        return _parse_csv_file(path, default_contacts)
+
+    # Excel (.xlsx) parsing — works on both .xlsx files AND .csv files that are actually xlsx binaries
+    import openpyxl, io
+
+    wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), read_only=True, data_only=True)
     try:
         ws = wb.active
         if ws is None:
             raise ValueError("Workbook has no active sheet")
 
-        result = ParseResult()
-
-        # Read header row
         header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
         if header_row is None:
             raise ValueError("Spreadsheet is empty — no header row found")
 
         headers = [str(h).strip().lower() if h else "" for h in header_row]
 
-        # Validate required columns exist
-        missing = REQUIRED_COLUMNS - set(headers)
-        if missing:
-            raise ValueError(f"Missing required column(s): {', '.join(sorted(missing))}")
+        # 1. Standard 5-column format
+        if "device_code" in headers:
+            missing = REQUIRED_COLUMNS - set(headers)
+            if missing:
+                raise ValueError(f"Missing required column(s): {', '.join(sorted(missing))}")
 
-        col_idx = {name: i for i, name in enumerate(headers)}
+            col_idx = {name: i for i, name in enumerate(headers)}
+            result = ParseResult()
+            for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                try:
+                    raw = {col: str(row[col_idx[col]]).strip() if col_idx[col] < len(row) and row[col_idx[col]] is not None else ""
+                           for col in REQUIRED_COLUMNS}
+                    for fld in ("device_code", "location_name", "zone", "device_type"):
+                        if not raw[fld]:
+                            raise ValueError(f"missing {fld}")
+                    contacts = _parse_contacts(raw["contacts"])
+                    if not contacts:
+                        raise ValueError("contacts list is empty")
+                    canon_code = _extract_device_code(raw["device_code"]) or raw["device_code"].upper()
+                    result.valid_rows.append(ParsedRow(
+                        device_code=canon_code,
+                        location_name=raw["location_name"],
+                        zone=raw["zone"],
+                        device_type=raw["device_type"],
+                        contacts=contacts,
+                    ))
+                except Exception as e:
+                    result.errors.append(ParseError(row_number=row_num, reason=str(e)))
+            return result
 
-        # Parse data rows
-        for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-            try:
-                raw = {col: str(row[col_idx[col]]).strip() if row[col_idx[col]] is not None else ""
-                       for col in REQUIRED_COLUMNS}
+        # 2. Simple 2-column Excel (ID, Location) or Bekaert format
+        rows = []
+        for r in ws.iter_rows(values_only=True):
+            if r and any(c is not None and str(c).strip() for c in r):
+                rows.append([str(c).strip() if c is not None else "" for c in r])
 
-                # Validate required fields are non-empty
-                for field_name in ("device_code", "location_name", "zone", "device_type"):
-                    if not raw[field_name]:
-                        raise ValueError(f"missing {field_name}")
+        if not rows:
+            raise ValueError("Spreadsheet has no data")
 
-                contacts = _parse_contacts(raw["contacts"])
-                if not contacts:
-                    raise ValueError("contacts list is empty")
+        # If it's Bekaert format with 'address in fire panel'
+        if any("address in fire panel" in str(c).lower() for c in rows[0]):
+            result = ParseResult()
+            seen_codes = set()
+            for row_num, row in enumerate(rows[1:], start=2):
+                if len(row) < 3:
+                    continue
+                # Handle layout
+                addr = row[2] if len(row) >= 5 and not row[0] else row[1]
+                loc = row[3] if len(row) >= 5 and not row[0] else row[2]
+                desc = row[4] if len(row) >= 5 and not row[0] else (row[3] if len(row) > 3 else "")
 
+                if not addr or "address in fire panel" in addr.lower():
+                    continue
+                code = _extract_device_code(addr)
+                if not code or code in seen_codes:
+                    continue
+                seen_codes.add(code)
+                loc_name = f"{loc} - {desc}" if desc and desc != loc else loc
                 result.valid_rows.append(ParsedRow(
-                    device_code=raw["device_code"],
-                    location_name=raw["location_name"],
-                    zone=raw["zone"],
-                    device_type=raw["device_type"],
-                    contacts=contacts,
+                    device_code=code,
+                    location_name=loc_name or "Unknown location",
+                    zone=loc or "Unknown zone",
+                    device_type=_extract_device_type(addr),
+                    contacts=default_contacts,
                 ))
-            except (ValueError, IndexError, TypeError) as e:
-                result.errors.append(ParseError(row_number=row_num, reason=str(e)))
+            return result
 
-        return result
+        # Simple 2-column fallback
+        return _parse_2col_data(rows, default_contacts)
     finally:
         wb.close()
-

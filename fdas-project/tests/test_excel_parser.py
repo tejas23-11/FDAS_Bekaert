@@ -152,6 +152,31 @@ class TestExcelParser(unittest.TestCase):
         self.assertIn("1 device", result.summary)
         self.assertIn("1 row", result.summary)
 
+    def test_parse_simple_2col_csv(self):
+        """Simple 2-column CSV with ID and Location."""
+        _SCRATCH.mkdir(exist_ok=True)
+        csv_path = _SCRATCH / "simple.csv"
+        csv_path.write_text("ID,Location\nL1/101,1st Aid Room Near Office\nL1 A102,QA Lab Room\n", encoding="utf-8")
+        result = parse_device_map(csv_path)
+
+        self.assertEqual(len(result.valid_rows), 2)
+        self.assertEqual(result.valid_rows[0].device_code, "L1 A101")
+        self.assertEqual(result.valid_rows[0].location_name, "1st Aid Room Near Office")
+        self.assertEqual(result.valid_rows[1].device_code, "L1 A102")
+
+    def test_parse_simple_2col_xlsx(self):
+        """Simple 2-column Excel with ID and Location."""
+        path = _make_xlsx([
+            ["ID", "Location"],
+            ["L1/101", "1st Aid Room Near Office"],
+            ["L1 A102", "QA Lab Room"],
+        ])
+        result = parse_device_map(path)
+
+        self.assertEqual(len(result.valid_rows), 2)
+        self.assertEqual(result.valid_rows[0].device_code, "L1 A101")
+        self.assertEqual(result.valid_rows[0].location_name, "1st Aid Room Near Office")
+
 
 if __name__ == "__main__":
     unittest.main()

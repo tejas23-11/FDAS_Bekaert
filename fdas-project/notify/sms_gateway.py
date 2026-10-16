@@ -45,34 +45,112 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
         return True
 
     import time
-    ser = _serial_port()
+    ser = None
     try:
-        # Set text mode
+        ser = _serial_port()
+        # Cancel any pending SMS prompt from previously aborted operations
+        ser.write(b"\x1B\r\n")
+        time.sleep(0.2)
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+
+        # Ensure standard GSM charset, text mode, standard CSMP parameters and CS routing
+        ser.write(b'AT+CSCS="GSM"\r')
+        time.sleep(0.2)
         ser.write(b'AT+CMGF=1\r')
-        time.sleep(0.5)
+        time.sleep(0.2)
+        ser.write(b'AT+CSMP=17,167,0,0\r')
+        time.sleep(0.2)
+        ser.write(b'AT+CGSMS=1\r')
+        time.sleep(0.2)
         ser.read(ser.in_waiting)  # flush response
 
-        # Set recipient
-        ser.write(f'AT+CMGS="{to_number}"\r'.encode())
-        time.sleep(0.5)
-        ser.read(ser.in_waiting)  # wait for '>' prompt
+        # Ensure message is strictly GSM 7-bit ASCII
+        clean_msg = "".join(c for c in message if 32 <= ord(c) <= 126 or c in "\r\n")
+        # Replace characters that break standard GSM 7-bit charset and explode size in text mode
+        clean_msg = clean_msg.replace("[", "(").replace("]", ")").replace("{", "(").replace("}", ")").replace("#", " ")
+        # Hard truncate to 140 chars to ensure it fits in a single standard 160-char SMS
+        if len(clean_msg) > 140:
+            clean_msg = clean_msg[:137] + "..."
+
+        # Set recipient and wait specifically for '>' prompt
+        clean_number = "".join(c for c in to_number if c.isdigit() or c == "+")
+        ser.write(f'AT+CMGS="{clean_number}"\r'.encode('ascii', errors='ignore'))
+
+        prompt_found = False
+        start_t = time.time()
+        buf = b""
+        while time.time() - start_t < 3.0:
+            if ser.in_waiting:
+                buf += ser.read(ser.in_waiting)
+                if b">" in buf:
+                    prompt_found = True
+                    break
+            time.sleep(0.05)
+
+        if not prompt_found:
+            print(f"[notify] SMS failed to {clean_number}: no '>' prompt from modem (got: {buf.decode(errors='replace')})")
+            return False
 
         # Send message body + Ctrl+Z to transmit
-        ser.write(message.encode() + b"\x1A")
-        time.sleep(3)  # SIM7600 needs a few seconds to send
+        ser.write(clean_msg.encode('ascii', errors='ignore') + b"\x1A")
 
-        response = ser.read(ser.in_waiting).decode(errors='replace')
+        # Wait up to 10 seconds for +CMGS: or ERROR
+        resp_buf = b""
+        start_t = time.time()
+        while time.time() - start_t < 10.0:
+            if ser.in_waiting:
+                resp_buf += ser.read(ser.in_waiting)
+                if b"+CMGS:" in resp_buf or b"ERROR" in resp_buf:
+                    break
+            time.sleep(0.1)
+
+        response = resp_buf.decode(errors='replace')
         if "+CMGS:" in response:
-            print(f"[notify] SMS sent to {to_number}")
+            print(f"[notify] SMS sent to {clean_number}")
             return True
         else:
-            print(f"[notify] SMS failed to {to_number}: {response}")
+            print(f"[notify] SMS failed to {clean_number}: {response}")
             return False
     except Exception as e:
         print(f"[notify] SMS error to {to_number}: {e}")
         return False
     finally:
-        ser.close()
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:
+                pass
+        time.sleep(1.0)  # Cooldown between SMS dispatches
+
+
+def extract_panel_summary(text: str) -> str:
+    """Extract only useful info from raw panel OCR: time and zone number.
+    Returns a clean short string like 'Zone 1 | Time: 09:57' for SMS.
+    """
+    if not text:
+        return ""
+    import re
+
+    # Extract time (HH:MM format)
+    time_match = re.search(r'\b(\d{1,2}:\d{2})\b', text)
+    time_str = time_match.group(1) if time_match else ""
+
+    # Extract zone number
+    zone_match = re.search(r'\bZone\s*(\d+)\b', text, re.IGNORECASE)
+    zone_str = f"Zone {zone_match.group(1)}" if zone_match else ""
+
+    # Extract fire count if available (e.g. "1/1" in "Fire 1/1")
+    fire_match = re.search(r'Fire\s+(\d+/\d+)', text, re.IGNORECASE)
+    fire_str = f"Fires: {fire_match.group(1)}" if fire_match else ""
+
+    parts = [p for p in [zone_str, fire_str, f"Time: {time_str}" if time_str else ""] if p]
+    return " - ".join(parts)
+
+
+def clean_panel_ocr_for_sms(text: str) -> str:
+    """Legacy: kept for backward compat. Use extract_panel_summary for new code."""
+    return extract_panel_summary(text)
 
 
 def dispatch(
@@ -84,16 +162,21 @@ def dispatch(
     device_type: str = "",
     zone: str = "",
     dry_run: bool = True,
+    raw_text: str = "",
 ) -> bool:
     """
-    Sends to every contact in the resolved contact group, with wording
-    tailored to the message type. Retries with backoff on failure; marks
-    'escalated' if all retries are exhausted. Always updates
-    events.sms_status independently of the event record itself (already
-    logged before this ever runs).
+    Sends to every contact in the resolved contact group.
+    For fire alarms, builds a clean structured message with device, location, time and zone.
     """
-    template = _MESSAGE_TEMPLATES.get(message_type, "FDAS ALERT: {code} [{device_type}] at {location}, Zone: {zone}.")
-    message = template.format(code=device_code, location=location_name, device_type=device_type, zone=zone)
+    if message_type == "fire":
+        panel_summary = extract_panel_summary(raw_text)
+        has_loc = location_name and location_name not in ("Unknown", "Unknown location", "Unknown location (unmapped device)")
+        loc_line = f"\nLoc: {location_name}" if has_loc else ""
+        time_line = f"\n{panel_summary}" if panel_summary else ""
+        message = f"FIRE ALARM\nDevice: {device_code}{loc_line}{time_line}"
+    else:
+        template = _MESSAGE_TEMPLATES.get(message_type, "FDAS ALERT: {code} [{device_type}] at {location}, Zone: {zone}.")
+        message = template.format(code=device_code, location=location_name, device_type=device_type, zone=zone)
 
     success = False
     attempts = 0

@@ -28,11 +28,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import os
 import shutil
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Silence all third-party debug and info loggers (ppocr, paddlex, urllib3, etc.)
+logging.disable(logging.INFO)
+os.environ["GLOG_minloglevel"] = "3"
 
 import cv2
 
@@ -43,10 +49,79 @@ from cv.event import DetectedEvent
 from backend.pipeline import handle_detected_event
 from backend.db import init_db
 
+import re
+
 # ── Constants ─────────────────────────────────────────────────────────
-INBOX_DIR = Path("panel_inbox")
+_SCRIPT_DIR = Path(__file__).resolve().parent
+INBOX_DIR = _SCRIPT_DIR / "panel_inbox"
 PROCESSED_DIR = INBOX_DIR / "processed"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff"}
+
+_ALERT_STATE_FILE = INBOX_DIR / ".active_alert_state.json"
+_current_active_alert: dict | None = None
+
+
+def _load_alert_state() -> dict | None:
+    """Load the currently active alarm state from memory or persistent disk cache."""
+    global _current_active_alert
+    if _current_active_alert is not None:
+        return _current_active_alert
+    try:
+        if _ALERT_STATE_FILE.exists():
+            with open(_ALERT_STATE_FILE, "r", encoding="utf-8") as f:
+                _current_active_alert = json.load(f)
+                return _current_active_alert
+    except Exception:
+        pass
+    _current_active_alert = None
+    return None
+
+
+def _save_alert_state(state: dict | None):
+    """Save or clear active alert state in memory and file."""
+    global _current_active_alert
+    _current_active_alert = state
+    try:
+        _ALERT_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if state is None:
+            if _ALERT_STATE_FILE.exists():
+                _ALERT_STATE_FILE.unlink(missing_ok=True)
+        else:
+            with open(_ALERT_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+    except Exception as e:
+        print(f"  [warn] Could not write alert state: {e}")
+
+
+def is_duplicate_alert(message_type: str, alert_key: str) -> bool:
+    """
+    Check if the detected alert matches the currently active alert.
+    If it is the same alert (e.g. fire/fault still actively shown on LCD),
+    we suppress duplicate SMS and calls so the user isn't spammed.
+    """
+    active = _load_alert_state()
+    if not active:
+        return False
+    if active.get("message_type") == message_type and active.get("key") == alert_key:
+        return True
+    return False
+
+
+def mark_alert_active(message_type: str, alert_key: str, summary: str = ""):
+    """Record an active alarm state so subsequent frames are suppressed."""
+    state = {
+        "message_type": message_type,
+        "key": alert_key,
+        "summary": summary,
+        "timestamp": datetime.now().isoformat(),
+    }
+    _save_alert_state(state)
+
+
+def clear_active_alert():
+    """Clear active alarm state when panel returns to normal."""
+    _save_alert_state(None)
+
 
 SEP = "=" * 65
 
@@ -71,68 +146,177 @@ def _find_tesseract() -> str | None:
     return None
 
 
-def load_calibration(path: str = "hardware/calibration.json") -> dict:
-    """Load calibration config (screen ROI coordinates)."""
-    calib_path = Path(path)
-    if not calib_path.exists():
-        calib_path = Path("hardware/calibration.example.json")
-        print(f"  [!!] {path} not found, using {calib_path}")
-    with open(calib_path) as f:
-        return json.load(f)
+# ── PaddleOCR engine (singleton) ──────────────────────────────────────
+_paddle_engine = None
+_paddle_available = None  # None = not checked yet
 
 
-def process_image(image_path: Path, calibration: dict, dry_run: bool = False) -> bool:
+def _is_arm_platform() -> bool:
+    """Detect ARM architecture (Raspberry Pi, etc.)."""
+    import platform
+    machine = platform.machine().lower()
+    return machine.startswith("aarch64") or machine.startswith("arm")
+
+
+def _setup_arm_env():
+    """Set environment variables that prevent PaddlePaddle segfaults on ARM.
+
+    MKL-DNN and aggressive threading cause native C++ crashes on aarch64.
+    These must be set BEFORE importing paddlepaddle / paddleocr.
     """
-    Run a single panel image through the complete live pipeline.
-    Returns True if the image was processed and a notification was triggered.
+    import os
+    os.environ.setdefault("FLAGS_use_mkldnn", "0")
+    os.environ.setdefault("FLAGS_use_xdnn", "0")
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+
+def _get_paddle_engine():
+    """Lazily create PaddleOCR engine (singleton, heavy to init).
+
+    On ARM (Raspberry Pi) we apply environment workarounds and use the
+    older, lighter .ocr() API with PP-OCRv3 — the heavy PP-OCRv6 .predict()
+    models are known to segfault on aarch64.
     """
-    print(f"\n{SEP}")
-    print(f"  PROCESSING: {image_path}")
-    print(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"  Mode: {'DRY-RUN' if dry_run else 'LIVE — real SMS/calls'}")
-    print(SEP)
+    global _paddle_engine, _paddle_available
+    if _paddle_available is False:
+        return None
+    if _paddle_engine is not None:
+        return _paddle_engine
 
-    # ── Stage 1: Load image ──────────────────────────────────────────
-    frame = cv2.imread(str(image_path))
-    if frame is None:
-        print(f"  [!!] Failed to load image: {image_path}")
-        return False
-    h, w = frame.shape[:2]
-    print(f"  [OK] Loaded image: {w} x {h}")
+    is_arm = _is_arm_platform()
 
-    # ── Stage 2: ROI crop ────────────────────────────────────────────
-    roi_cfg = calibration["screen_roi"]
-    rx, ry = roi_cfg.get("x", 0), roi_cfg.get("y", 0)
-    rw, rh = roi_cfg.get("width", 0), roi_cfg.get("height", 0)
+    # ARM workaround: set env vars BEFORE importing paddleocr
+    if is_arm:
+        _setup_arm_env()
 
-    if rw == 0 or rh == 0:
-        # No ROI configured — use full image
-        roi = frame
-        print(f"  [OK] ROI: full image (no crop configured)")
+    try:
+        from paddleocr import PaddleOCR
+
+        if is_arm:
+            for attempt in [
+                {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
+                {"lang": "en", "use_gpu": False, "use_angle_cls": False},
+                {"lang": "en", "use_gpu": False},
+                {"lang": "en"},
+            ]:
+                try:
+                    _paddle_engine = PaddleOCR(**attempt)
+                    break
+                except (TypeError, ValueError):
+                    continue
+        else:
+            for attempt in [
+                {
+                    "lang": "en",
+                    "device": "cpu",
+                    "enable_mkldnn": False,
+                    "use_doc_orientation_classify": False,
+                    "use_doc_unwarping": False,
+                    "use_textline_orientation": False,
+                },
+                {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
+                {"lang": "en", "use_gpu": False, "use_angle_cls": False},
+                {"lang": "en"},
+            ]:
+                try:
+                    _paddle_engine = PaddleOCR(**attempt)
+                    break
+                except (TypeError, ValueError):
+                    continue
+        import logging
+        import os
+        os.environ["GLOG_minloglevel"] = "3"
+        for _name in ("ppocr", "paddlex"):
+            _l = logging.getLogger(_name)
+            _l.setLevel(logging.ERROR)
+            _l.propagate = False
+            for _h in _l.handlers:
+                _h.setLevel(logging.ERROR)
+
+        _paddle_available = True
+        return _paddle_engine
+    except ImportError:
+        _paddle_available = False
+        return None
+    except Exception as e:
+        print(f"  [!!] PaddleOCR init failed: {e}")
+        _paddle_available = False
+        return None
+
+
+
+
+def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = None) -> tuple[str, float]:
+    """
+    Run PaddleOCR on the image or cropped ROI.
+    """
+    engine = _get_paddle_engine()
+    if engine is None:
+        raise RuntimeError("PaddleOCR not installed")
+
+    import numpy as np
+    target = roi if (roi is not None and isinstance(roi, np.ndarray)) else (str(image_path) if image_path is not None else None)
+    if target is None:
+        return "", 0.0
+
+    all_texts = []
+    all_scores = []
+
+    if hasattr(engine, "predict"):
+        # PaddleOCR 3.x: .predict() API returns dicts with rec_texts/rec_scores
+        results = engine.predict(input=target)
+        for result in results:
+            rec_texts = result.get("rec_texts", []) if isinstance(result, dict) else getattr(result, "rec_texts", [])
+            rec_scores = result.get("rec_scores", []) if isinstance(result, dict) else getattr(result, "rec_scores", [])
+            for t, s in zip(rec_texts, rec_scores):
+                t_clean = str(t).strip()
+                if t_clean:
+                    all_texts.append(t_clean)
+                    all_scores.append(float(s))
     else:
-        roi = crop_screen_region(frame, roi_cfg)
-        print(f"  [OK] ROI crop: ({rx},{ry}) {rw}x{rh}")
+        # PaddleOCR 2.x: .ocr() API returns list of [bbox, (text, score)]
+        results = engine.ocr(target, cls=False)
+        if results:
+            for line_group in results:
+                if line_group is None:
+                    continue
+                for line in line_group:
+                    if isinstance(line, (list, tuple)) and len(line) >= 2:
+                        text_part = line[1]
+                        if isinstance(text_part, (list, tuple)) and len(text_part) >= 2:
+                            t_clean = str(text_part[0]).strip()
+                            if t_clean:
+                                all_texts.append(t_clean)
+                                all_scores.append(float(text_part[1]))
 
-    # ── Stage 3+4: OCR (dual-attempt — colour ROI + preprocessed) ─────
-    #
-    # Strategy: try OCR on both the raw colour crop AND a preprocessed
-    # (inverted binary) version, keep whichever produces more text.
-    # This is the same approach that worked in diagnose_real_image.py.
-    text = ""
-    confidence = 0.0
+    if not all_texts:
+        return "", 0.0
 
+    text = " ".join(all_texts)
+    avg_confidence = sum(all_scores) / len(all_scores) if all_scores else 0.0
+    return text, avg_confidence
+
+
+def _ocr_tesseract(roi) -> tuple[str, float]:
+    """
+    Fallback OCR using Tesseract. Tries colour ROI + inverted binary,
+    keeps whichever produces more text.
+    
+    Returns (text, confidence).
+    """
     import subprocess
     import tempfile
     from PIL import Image as PILImage, ImageFilter, ImageOps
 
-    # Find tesseract binary
     tesseract_cmd = _find_tesseract()
     if tesseract_cmd is None:
         print(f"  [!!] Tesseract not found! Install with: sudo apt install tesseract-ocr")
-        return False
+        return "", 0.0
     print(f"  [OK] Tesseract: {tesseract_cmd}")
 
-    # Convert OpenCV BGR frame to Pillow RGB for preprocessing
+    # Convert OpenCV BGR to Pillow RGB
     roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
     pil_colour = PILImage.fromarray(roi_rgb)
 
@@ -143,7 +327,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     binary = sharp.point(lambda p: 255 if p > 128 else 0, '1').convert("L")
     pil_inverted = ImageOps.invert(binary)
 
-    # Try OCR on both versions, keep the longer result
+    text = ""
     for label, pil_img in [("colour ROI", pil_colour), ("inverted binary", pil_inverted)]:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp_path = tmp.name
@@ -157,52 +341,235 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
             candidate = result.stdout.strip()
             if candidate and len(candidate) > len(text):
                 text = candidate
-                print(f"  [OK] OCR ({label}): {len(text)} chars extracted")
+                print(f"  [OK] Tesseract ({label}): {len(text)} chars extracted")
         except Exception as e:
-            print(f"  [!!] OCR ({label}): {e}")
+            print(f"  [!!] Tesseract ({label}): {e}")
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
-    if not text:
-        print(f"  [!!] OCR returned empty text — cannot proceed")
+    return text, 0.5  # Tesseract confidence is unreliable, use 0.5 as placeholder
+
+
+def load_calibration(path: str | None = None) -> dict:
+    """Load calibration config (screen ROI coordinates)."""
+    if path is None:
+        path = str(_SCRIPT_DIR / "hardware" / "calibration.json")
+    calib_path = Path(path)
+    if not calib_path.exists():
+        calib_path = _SCRIPT_DIR / "hardware" / "calibration.example.json"
+    with open(calib_path) as f:
+        return json.load(f)
+
+
+def process_image(image_path: Path, calibration: dict, dry_run: bool = False) -> bool:
+    """
+    Run a single panel image through the complete live pipeline.
+    Returns True if the image was processed and a notification was triggered.
+    """
+    # ── Stage 1: Load image ──────────────────────────────────────────
+    try:
+        Path("/tmp/fdas_heartbeat").touch(exist_ok=True)
+    except Exception:
+        pass
+
+    frame = cv2.imread(str(image_path))
+    if frame is None:
+        print(f"  [!!] Failed to load image: {image_path}")
         return False
-    print(f"  [OK] Best OCR result: {len(text)} chars")
-    print()
-    print(f"  --- OCR TEXT ---")
-    for i, line in enumerate(text.splitlines(), 1):
-        print(f"    {i:2d}| {line}")
-    print()
+
+    # Apply camera rotation if specified in calibration
+    rot = calibration.get("camera", {}).get("rotation", 0)
+    if rot == 90:
+        frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    elif rot == 180:
+        frame = cv2.rotate(frame, cv2.ROTATE_180)
+    elif rot == 270:
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+    h, w = frame.shape[:2]
+
+    # ── Stage 2: ROI crop ────────────────────────────────────────────
+    roi_cfg = calibration.get("screen_roi", {})
+    rw, rh = roi_cfg.get("width", 0), roi_cfg.get("height", 0)
+    roi = frame if (rw == 0 or rh == 0) else crop_screen_region(frame, roi_cfg)
+
+    # ── Stage 3+4: OCR (PaddleOCR primary, Tesseract fallback) ─────────
+    text = ""
+    confidence = 0.0
+
+    paddle_success = False
+    try:
+        text, confidence = _ocr_paddle(image_path, roi, calibration)
+        if text:
+            paddle_success = True
+    except Exception:
+        pass
+
+    if not paddle_success:
+        text, confidence = _ocr_tesseract(roi)
+
+    if not text:
+        print(f"┌{'─' * 66}┐")
+        print(f"│  FDAS PANEL STATUS: ⚠️  NO TEXT DETECTED                          │")
+        print(f"├─────────────────────┬────────────────────────────────────────────┤")
+        print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
+        print(f"│  Status             │ Blurry image / camera out of focus         │")
+        print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
+        return False
 
     # ── Stage 5: Classify ────────────────────────────────────────────
     message_type = classify_message(text)
     if message_type in ("normal", "unknown"):
-        print(f"  [!!] Classified as '{message_type}' — no notification needed")
+        if message_type == "normal":
+            if _load_alert_state():
+                print("  [FDAS] Panel returned to NORMAL. Cleared active alert state.")
+                clear_active_alert()
+        status_label = "✅ NORMAL (All Clear)" if message_type == "normal" else f"ℹ️  {message_type.upper()}"
+        print(f"┌{'─' * 66}┐")
+        print(f"│  FDAS PANEL STATUS: {status_label:<44}│")
+        print(f"├─────────────────────┬────────────────────────────────────────────┤")
+        print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
+        print(f"│  Camera Image       │ {w} x {h} pixels (Arducam 64MP){' ' * max(0, 16)}│")
+        print(f"│  PaddleOCR Reading  │ {len(text)} chars extracted ({confidence*100:.1f}% confidence){' ' * max(0, 43 - len(f'{len(text)} chars extracted ({confidence*100:.1f}% confidence)'))}│")
+        print(f"│  Active Alarms      │ 0 active fires / faults                    │")
+        print(f"│  Action             │ 🟢 Monitoring... No emergency dispatch     │")
+        print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
         return False
-    print(f"  [OK] Classified: {message_type.upper()}")
-
-    # Show matched keywords
-    from cv.classify import _VOCABULARY
-    text_lower = text.lower()
-    for cat, kws in _VOCABULARY.items():
-        hits = [kw for kw in kws if kw in text_lower]
-        if hits:
-            print(f"       matched keywords for '{cat}': {hits}")
 
     # ── Stage 6: Extract & validate device code ──────────────────────
     code = extract_code(text)
-    if not code:
-        print(f"  [!!] No device code pattern found in OCR text")
-        return False
+    unknown_device = False
 
-    valid = validate_code(code)
-    if not valid:
-        print(f"  [!!] Device code '{code}' not in known_devices.txt — dropping")
-        return False
-    print(f"  [OK] Device code: {code}")
+    detected_zone = ""
+    zm = re.search(r'\bZone\s*(\d+)\b', text, re.IGNORECASE)
+    if zm:
+        detected_zone = f"Zone {zm.group(1)}"
+
+    if not code:
+        if message_type == "fire":
+            # Only treat as unknown-device fire if the panel text contains confirmed alarm banner phrases
+            if any(h in text.lower() for h in ("first fire", "latest fire", "fire 1/", "fire 2/", "fire at")):
+                unknown_device = True
+            else:
+                print(f"┌{'─' * 66}┐")
+                print(f"│  FDAS STATUS: ℹ️  FIRE KEYWORD WITHOUT VALID ALARM BANNER       │")
+                print(f"├─────────────────────┬────────────────────────────────────────────┤")
+                print(f"│  Extracted Text     │ {text[:42]:<43}│")
+                print(f"│  Status             │ Ignored (no device code or alarm banner)   │")
+                print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
+                return False
+        elif message_type == "fault":
+            # Real fault displayed on panel (e.g. system fault, zone fault, supply fault)
+            unknown_device = True
+        else:
+            print(f"┌{'─' * 66}┐")
+            print(f"│  FDAS STATUS: ⚠️  {message_type.upper()} (NO DEVICE CODE FOUND)           │")
+            print(f"├─────────────────────┬────────────────────────────────────────────┤")
+            print(f"│  Extracted Text     │ {text[:42]:<43}│")
+            print(f"│  Status             │ No valid device code extracted             │")
+            print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
+            return False
+
+    if code and not validate_code(code):
+        if message_type in ("fire", "fault"):
+            unknown_device = True
+        else:
+            print(f"┌{'─' * 66}┐")
+            print(f"│  FDAS STATUS: ⚠️  INVALID CODE: {code:<39}│")
+            print(f"├─────────────────────┬────────────────────────────────────────────┤")
+            print(f"│  Extracted Text     │ {text[:42]:<43}│")
+            print(f"│  Status             │ Device code failed whitelist validation    │")
+            print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
+            return False
+
+    # Unique key for deduplicating repeated notifications across continuous frames
+    alert_key = code if code else (detected_zone if detected_zone else "PANEL")
+
+    # ── Deduplication: Suppress repeated alerts for persistent active alarm ──
+    if is_duplicate_alert(message_type, alert_key):
+        print(f"┌{'─' * 66}┐")
+        print(f"│  FDAS DEDUP: ⏸️  DUPLICATE {message_type.upper():<37}│")
+        print(f"├─────────────────────┬────────────────────────────────────────────┤")
+        print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
+        print(f"│  Device / Zone      │ {alert_key:<43}│")
+        print(f"│  Status             │ Active alert already notified (suppressed) │")
+        print(f"│  Action             │ 🔕 Suppressed: No repeated SMS or call     │")
+        print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
+        return True
+
+    # Print clean alarm card
+    icon = "🚨" if message_type == "fire" else "⚠️ "
+    action_text = "📱 SMS Dispatched | 📞 Call Placed" if message_type == "fire" else "📱 SMS Dispatched (No Call)"
+    print(f"┌{'─' * 66}┐")
+    print(f"│  {icon} ALARM DETECTED — {message_type.upper():<41}│")
+    print(f"├─────────────────────┬────────────────────────────────────────────┤")
+    print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
+    print(f"│  Device Code        │ {code or detected_zone or 'PANEL':<43}│")
+    print(f"│  OCR Confidence     │ {confidence*100:.1f}%{' ' * 37}│")
+    print(f"│  Action             │ {action_text:<43}│")
+    print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
 
     # ── Stage 7: Create event + route through backend ────────────────
-    print()
-    print(f"  --- BACKEND PIPELINE ---")
+    if unknown_device:
+        from notify.sms_gateway import send_sms
+        from notify.voice_call import place_call
+        from backend.db import get_connection
+        from backend.location import _get_global_contacts, resolve_zone_location
+        from notify.sms_gateway import extract_panel_summary
+
+        contacts = _get_global_contacts("sms")
+        if not contacts:
+            contacts = ["+919545202660", "+919730814745", "+919561515546", "+919172319233"]
+
+        call_contacts = _get_global_contacts("call")
+        primary_contact = call_contacts[0] if call_contacts else contacts[0]
+
+        detected_code = code if code else (detected_zone if detected_zone else "UNKNOWN")
+        loc_name = resolve_zone_location(detected_code)
+        loc_line = f"\nLoc: {loc_name}" if loc_name else ""
+
+        panel_summary = extract_panel_summary(text)
+        time_line = f"\n{panel_summary}" if panel_summary else ""
+        if message_type == "fire":
+            alert_msg = f"FIRE ALARM\nDevice: {detected_code}{loc_line}{time_line}"
+        elif message_type == "fault":
+            alert_msg = f"FAULT ALERT\nDevice: {detected_code}{loc_line}{time_line}"
+        else:
+            alert_msg = f"{message_type.upper()} ALERT\nDevice: {detected_code}{loc_line}{time_line}"
+
+        for contact in contacts:
+            send_sms(contact, alert_msg, dry_run=dry_run)
+
+        # Log to DB as an active event
+        conn = get_connection()
+        cur = conn.execute(
+            """
+            INSERT INTO events (device_code, message_type, raw_text, detected_at, confidence,
+                                 location_name, contacts, primary_contact, status, sms_status, call_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 'sent', 'pending')
+            """,
+            (
+                detected_code,
+                message_type,
+                text,
+                datetime.now(timezone.utc).isoformat(),
+                confidence,
+                loc_name,
+                json.dumps(contacts),
+                primary_contact,
+            ),
+        )
+        conn.commit()
+        event_id = cur.lastrowid
+        conn.close()
+
+        # Place voice call ONLY for FIRE emergencies! NEVER for faults!
+        if message_type == "fire" and primary_contact:
+            place_call(event_id, primary_contact, dry_run=dry_run)
+
+        mark_alert_active(message_type, alert_key, panel_summary)
+        return True
+
     event = DetectedEvent(
         device_code=code,
         message_type=message_type,
@@ -211,12 +578,8 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         frame_id=0,
     )
 
-    # skip_debounce=True because we're processing a single manually-dropped image
     handle_detected_event(event, dry_run=dry_run, skip_debounce=True)
-
-    print()
-    print(f"  {'DRY-RUN complete' if dry_run else 'LIVE notifications sent'}")
-    print(SEP)
+    mark_alert_active(message_type, alert_key, text)
     return True
 
 
@@ -283,6 +646,71 @@ def watch_inbox(calibration: dict, dry_run: bool = False, poll_seconds: float = 
         print("\n  Stopped watching.")
 
 
+def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: float = 3.0):
+    """
+    Continuous 24/7 camera monitoring loop in a single Python process.
+    Keeps PaddleOCR loaded in memory, capturing frames via in-memory RAM buffer (/dev/shm).
+    Cycle time drops from ~60s down to ~4-6s!
+    """
+    import subprocess
+    print(f"\n{SEP}")
+    print(f"  FDAS FAST LIVE MONITOR (In-Memory AI Engine)")
+    print(f"  Cycle interval: {interval_seconds}s (Continuous in-memory loop)")
+    print(f"  Mode: {'DRY-RUN' if dry_run else 'LIVE — real SMS/calls'}")
+    print(f"{SEP}\n")
+
+    # 1. Warm up PaddleOCR once so it stays resident in RAM
+    print("  [live] Initializing PaddleOCR in RAM...")
+    _get_paddle_engine()
+    print("  [live] PaddleOCR ready!\n")
+
+    shm_path = Path("/dev/shm/live_cam.jpg")
+    cmd = [
+        "libcamera-still",
+        "--nopreview",
+        "-t", "500",
+        "--width", "1920",
+        "--height", "1080",
+        "-q", "90",
+        "-o", str(shm_path),
+    ]
+
+    try:
+        while True:
+            # Update watchdog heartbeat
+            try:
+                Path("/tmp/fdas_heartbeat").touch(exist_ok=True)
+            except Exception:
+                pass
+
+            t0 = time.time()
+            shm_path.unlink(missing_ok=True)
+
+            try:
+                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=6)
+                if res.returncode == 0 and shm_path.exists():
+                    process_image(shm_path, calibration, dry_run=dry_run)
+                else:
+                    # Fallback to panel_inbox if /dev/shm is not available
+                    inbox_cam = INBOX_DIR / "live_cam.jpg"
+                    cmd_inbox = list(cmd)
+                    cmd_inbox[-1] = str(inbox_cam)
+                    subprocess.run(cmd_inbox, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=6)
+                    if inbox_cam.exists():
+                        process_image(inbox_cam, calibration, dry_run=dry_run)
+                    else:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Camera busy or capture retry...")
+            except Exception as e:
+                print(f"  [live] Loop error: {e}")
+
+            elapsed = time.time() - t0
+            sleep_time = max(0.5, interval_seconds - elapsed)
+            time.sleep(sleep_time)
+
+    except KeyboardInterrupt:
+        print("\n  Stopped live monitoring.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="FDAS Live Pipeline — process panel images and send notifications"
@@ -300,8 +728,16 @@ def main():
         help="Print what would be sent without actually sending SMS/calls"
     )
     parser.add_argument(
+        "--live", action="store_true",
+        help="Continuous 24/7 camera monitoring with fast in-memory PaddleOCR"
+    )
+    parser.add_argument(
+        "--interval", type=float, default=3.0,
+        help="Seconds between capture cycles (default: 3.0s)"
+    )
+    parser.add_argument(
         "--calibration", type=str, default="hardware/calibration.json",
-        help="Path to calibration.json"
+        help="Path to calibration.json (default: hardware/calibration.json relative to script)"
     )
     args = parser.parse_args()
 
@@ -309,19 +745,29 @@ def main():
     init_db()
 
     # Load calibration
-    calibration = load_calibration(args.calibration)
+    calibration = load_calibration(args.calibration if args.calibration != "hardware/calibration.json" else None)
 
     if args.image:
         # Single image mode
         image_path = Path(args.image)
         if not image_path.exists():
-            print(f"ERROR: image not found: {image_path}")
-            sys.exit(1)
+            # Try relative to the script's own directory as fallback
+            alt_path = _SCRIPT_DIR / args.image
+            if alt_path.exists():
+                image_path = alt_path
+            else:
+                print(f"ERROR: image not found: {image_path}")
+                print(f"       (also checked: {alt_path})")
+                sys.exit(1)
         success = process_image(image_path, calibration, dry_run=args.dry_run)
         sys.exit(0 if success else 1)
 
+    elif args.live:
+        # Fast continuous in-memory camera monitoring (drops cycle from 60s to ~5s)
+        run_live_camera(calibration, dry_run=args.dry_run, interval_seconds=args.interval)
+
     elif args.watch:
-        # Watch mode
+        # Watch mode (watches panel_inbox/ for new images)
         watch_inbox(calibration, dry_run=args.dry_run)
 
     else:

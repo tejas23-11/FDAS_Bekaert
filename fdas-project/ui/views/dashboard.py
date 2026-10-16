@@ -7,7 +7,10 @@ shows up without manual reloading.
 
 from __future__ import annotations
 
-from flask import Blueprint, render_template
+import os
+from datetime import datetime, timezone
+
+from flask import Blueprint, render_template, redirect, url_for, flash, request
 
 from backend.db import get_connection
 from ui.auth import login_required
@@ -72,3 +75,21 @@ def index():
         banner=banner,
         banner_detail=banner_detail,
     )
+
+
+@dashboard_bp.route("/shutdown", methods=["POST"])
+@login_required
+def shutdown():
+    """Stop the Flask web UI only. Pipeline and watchdog keep running."""
+    flash("Web UI is shutting down. Pipeline and watchdog continue running.", "success")
+
+    # Shut down the Flask server only
+    func = request.environ.get("werkzeug.server.shutdown")
+    if func is not None:
+        func()
+    else:
+        # For newer Werkzeug versions, use os._exit
+        os._exit(0)
+
+    return redirect(url_for("dashboard.index"))
+

@@ -16,6 +16,8 @@ Run once after cloning / after wiping the DB:
     python3 -m hardware.seed_device_map
 """
 
+from __future__ import annotations
+
 import json
 import re
 from pathlib import Path
@@ -27,8 +29,8 @@ from backend.db import get_connection, init_db
 # On the Pi, copy this file or adjust the path.
 EXCEL_PATH = Path(r"C:\Tejas\Projects\FDAS_bekaert\Appliance_location.xlsx")
 
-# Placeholder contacts — update with real numbers before going live.
-_DEFAULT_CONTACTS = ["+1234567890", "+0987654321"]
+# Real emergency contacts
+_DEFAULT_CONTACTS = ["+919545202660", "+919730814745", "+919561515546", "+919172319233"]
 
 # Device type abbreviation -> full name mapping
 _DEVICE_TYPES = {
@@ -79,7 +81,7 @@ def _parse_excel(excel_path: Path) -> list[dict]:
     seen_codes = set()  # Deduplicate
 
     for row in ws.iter_rows(min_row=2, values_only=True):
-        # Columns: [None, SR.NO, ADDRESS, LOCATION, DESCRIPTION]
+        # Columns: [None, SR.NO, ADDRESS, LOCATION, DESCRIPTION] and rows as well
         if len(row) < 5:
             continue
 
@@ -168,6 +170,20 @@ def seed() -> None:
     # the Appliance_location.xlsx spreadsheet (possibly added later
     # or from a different commissioning batch).
     _SUPPLEMENTAL = [
+        {
+            "device_code": "L1 A101",
+            "location_name": "1ST AID RM",
+            "zone": "Zone 1",
+            "device_type": "MCP (manual call point)",
+            "contacts": _DEFAULT_CONTACTS,
+        },
+        {
+            "device_code": "L1/101",
+            "location_name": "1ST AID RM",
+            "zone": "Zone 1",
+            "device_type": "MCP (manual call point)",
+            "contacts": _DEFAULT_CONTACTS,
+        },
         {
             "device_code": "L2 A138",
             "location_name": "Utility Room - BD",
