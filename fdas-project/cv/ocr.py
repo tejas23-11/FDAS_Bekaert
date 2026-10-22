@@ -39,11 +39,39 @@ def _setup_arm_env():
     These must be set BEFORE importing paddlepaddle / paddleocr.
     """
     import os
+    os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
     os.environ.setdefault("FLAGS_use_mkldnn", "0")
     os.environ.setdefault("FLAGS_use_xdnn", "0")
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+
+def _extract_paddlex_texts(res) -> tuple[list[str], list[float]]:
+    """Extract recognized texts and scores from a PaddleX result object or dict."""
+    texts = []
+    scores = []
+    data = None
+    if hasattr(res, "json"):
+        data = res.json
+    elif isinstance(res, dict):
+        data = res
+    elif hasattr(res, "__dict__"):
+        data = res.__dict__
+
+    if isinstance(data, dict):
+        sub = data.get("res", {}) if isinstance(data.get("res"), dict) else data
+        rec_texts = data.get("rec_texts") or sub.get("rec_texts") or []
+        rec_scores = data.get("rec_scores") or sub.get("rec_scores") or []
+        for t, s in zip(rec_texts, rec_scores):
+            t_clean = str(t).strip()
+            if t_clean:
+                texts.append(t_clean)
+                try:
+                    scores.append(float(s))
+                except (ValueError, TypeError):
+                    scores.append(0.9)
+    return texts, scores
 
 
 def _try_paddle_ocr(image: np.ndarray):
@@ -63,8 +91,22 @@ def _try_paddle_ocr(image: np.ndarray):
             from paddleocr import PaddleOCR
 
             for attempt in [
+                {
+                    "lang": "en",
+                    "device": "cpu",
+                    "ocr_version": "PP-OCRv3",
+                    "use_doc_orientation_classify": False,
+                    "use_doc_unwarping": False,
+                    "use_textline_orientation": False,
+                },
+                {
+                    "lang": "en",
+                    "device": "cpu",
+                    "use_doc_orientation_classify": False,
+                    "use_doc_unwarping": False,
+                    "use_textline_orientation": False,
+                },
                 {"lang": "en", "device": "cpu", "ocr_version": "PP-OCRv3"},
-                {"lang": "en", "ocr_version": "PP-OCRv3"},
                 {"lang": "en", "device": "cpu"},
                 {"lang": "en"},
                 {
@@ -85,21 +127,34 @@ def _try_paddle_ocr(image: np.ndarray):
                 except (TypeError, ValueError, Exception):
                     continue
 
+        if _paddle_engine is None:
+            _paddle_import_failed = True
+            return None
+
+        # Pass image file path to prevent non-contiguous memory pointer SIGSEGV
+        import os
+        from pathlib import Path
+        import cv2
+        shm = Path("/dev/shm")
+        if shm.exists() and os.access(str(shm), os.W_OK):
+            tmp_target = shm / "paddle_ocr_tmp.jpg"
+        else:
+            import tempfile
+            tmp_target = Path(tempfile.gettempdir()) / "paddle_ocr_tmp.jpg"
+        cv2.imwrite(str(tmp_target), image)
+        clean_target = str(tmp_target)
+
         all_texts = []
         all_scores = []
 
         if hasattr(_paddle_engine, "predict"):
-            results = _paddle_engine.predict(input=image)
-            for result in results:
-                rec_texts = result.get("rec_texts", []) if isinstance(result, dict) else getattr(result, "rec_texts", [])
-                rec_scores = result.get("rec_scores", []) if isinstance(result, dict) else getattr(result, "rec_scores", [])
-                for t, s in zip(rec_texts, rec_scores):
-                    t_clean = str(t).strip()
-                    if t_clean:
-                        all_texts.append(t_clean)
-                        all_scores.append(float(s))
-        else:
-            results = _paddle_engine.ocr(image, cls=False)
+            results = _paddle_engine.predict(clean_target)
+            for res in results:
+                texts, scores = _extract_paddlex_texts(res)
+                all_texts.extend(texts)
+                all_scores.extend(scores)
+        elif hasattr(_paddle_engine, "ocr"):
+            results = _paddle_engine.ocr(clean_target, cls=False)
             if results:
                 for line_group in results:
                     if line_group is None:

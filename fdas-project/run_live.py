@@ -41,6 +41,7 @@ from pathlib import Path
 # ── ARM (Raspberry Pi) segfault prevention ────────────────────────────
 # PaddlePaddle's C++ core reads these at MODULE LOAD TIME.
 # They MUST be set BEFORE any import that could pull in paddle.
+os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 _machine = platform.machine().lower()
 if _machine.startswith("aarch64") or _machine.startswith("arm"):
     os.environ["FLAGS_use_mkldnn"] = "0"
@@ -203,6 +204,7 @@ def _setup_arm_env():
     These must be set BEFORE importing paddlepaddle / paddleocr.
     """
     import os
+    os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
     os.environ.setdefault("FLAGS_use_mkldnn", "0")
     os.environ.setdefault("FLAGS_use_xdnn", "0")
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -233,11 +235,25 @@ def _get_paddle_engine():
         from paddleocr import PaddleOCR
 
         if is_arm:
-            # CRITICAL: Force PP-OCRv3 models on ARM to avoid segfaults.
-            # Modern PaddleOCR versions (>= 2.8 / 3.x) removed use_gpu and show_log in favor of device="cpu".
+            # CRITICAL: Force PP-OCRv3 models on ARM and disable auxiliary models
+            # (doc orientation classifier and unwarping) which segfault on ARM64 CPU.
             for attempt in [
+                {
+                    "lang": "en",
+                    "device": "cpu",
+                    "ocr_version": "PP-OCRv3",
+                    "use_doc_orientation_classify": False,
+                    "use_doc_unwarping": False,
+                    "use_textline_orientation": False,
+                },
+                {
+                    "lang": "en",
+                    "device": "cpu",
+                    "use_doc_orientation_classify": False,
+                    "use_doc_unwarping": False,
+                    "use_textline_orientation": False,
+                },
                 {"lang": "en", "device": "cpu", "ocr_version": "PP-OCRv3"},
-                {"lang": "en", "ocr_version": "PP-OCRv3"},
                 {"lang": "en", "device": "cpu"},
                 {"lang": "en"},
                 {"lang": "en", "use_gpu": False, "ocr_version": "PP-OCRv3"},
@@ -256,6 +272,13 @@ def _get_paddle_engine():
                     "lang": "en",
                     "device": "cpu",
                     "enable_mkldnn": False,
+                    "use_doc_orientation_classify": False,
+                    "use_doc_unwarping": False,
+                    "use_textline_orientation": False,
+                },
+                {
+                    "lang": "en",
+                    "device": "cpu",
                     "use_doc_orientation_classify": False,
                     "use_doc_unwarping": False,
                     "use_textline_orientation": False,
@@ -297,6 +320,31 @@ def _get_paddle_engine():
         return None
 
 
+def _extract_paddlex_texts(res) -> tuple[list[str], list[float]]:
+    """Extract recognized texts and scores from a PaddleX result object or dict."""
+    texts = []
+    scores = []
+    data = None
+    if hasattr(res, "json"):
+        data = res.json
+    elif isinstance(res, dict):
+        data = res
+    elif hasattr(res, "__dict__"):
+        data = res.__dict__
+
+    if isinstance(data, dict):
+        sub = data.get("res", {}) if isinstance(data.get("res"), dict) else data
+        rec_texts = data.get("rec_texts") or sub.get("rec_texts") or []
+        rec_scores = data.get("rec_scores") or sub.get("rec_scores") or []
+        for t, s in zip(rec_texts, rec_scores):
+            t_clean = str(t).strip()
+            if t_clean:
+                texts.append(t_clean)
+                try:
+                    scores.append(float(s))
+                except (ValueError, TypeError):
+                    scores.append(0.9)
+    return texts, scores
 
 
 def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = None) -> tuple[str, float]:
@@ -308,27 +356,38 @@ def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = No
         raise RuntimeError("PaddleOCR not installed")
 
     import numpy as np
-    target = roi if (roi is not None and isinstance(roi, np.ndarray)) else (str(image_path) if image_path is not None else None)
-    if target is None:
+
+    # CRITICAL FOR ARM: Always pass an image file path rather than a sliced NumPy array.
+    # Passing raw non-contiguous NumPy slices from OpenCV cropping directly into PaddleX C++ backend
+    # causes native SIGSEGV (@0x0) pointer access crashes on ARM64.
+    clean_target = None
+    if roi is not None and isinstance(roi, np.ndarray) and roi.size > 0:
+        shm = Path("/dev/shm")
+        if shm.exists() and os.access(str(shm), os.W_OK):
+            tmp_path = shm / "paddle_crop_roi.jpg"
+        else:
+            import tempfile
+            tmp_path = Path(tempfile.gettempdir()) / "paddle_crop_roi.jpg"
+        cv2.imwrite(str(tmp_path), roi)
+        clean_target = str(tmp_path)
+    elif image_path is not None and Path(image_path).exists():
+        clean_target = str(image_path)
+    else:
         return "", 0.0
 
     all_texts = []
     all_scores = []
 
     if hasattr(engine, "predict"):
-        # PaddleOCR 3.x: .predict() API returns dicts with rec_texts/rec_scores
-        results = engine.predict(input=target)
-        for result in results:
-            rec_texts = result.get("rec_texts", []) if isinstance(result, dict) else getattr(result, "rec_texts", [])
-            rec_scores = result.get("rec_scores", []) if isinstance(result, dict) else getattr(result, "rec_scores", [])
-            for t, s in zip(rec_texts, rec_scores):
-                t_clean = str(t).strip()
-                if t_clean:
-                    all_texts.append(t_clean)
-                    all_scores.append(float(s))
-    else:
+        # PaddleOCR 3.x: .predict() API
+        results = engine.predict(clean_target)
+        for res in results:
+            texts, scores = _extract_paddlex_texts(res)
+            all_texts.extend(texts)
+            all_scores.extend(scores)
+    elif hasattr(engine, "ocr"):
         # PaddleOCR 2.x: .ocr() API returns list of [bbox, (text, score)]
-        results = engine.ocr(target, cls=False)
+        results = engine.ocr(clean_target, cls=False)
         if results:
             for line_group in results:
                 if line_group is None:
