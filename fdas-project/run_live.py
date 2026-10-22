@@ -232,16 +232,22 @@ def _get_paddle_engine():
         from paddleocr import PaddleOCR
 
         if is_arm:
+            # CRITICAL: Force PP-OCRv3 models on ARM.
+            # PP-OCRv6 (default) uses ops that segfault on aarch64.
             for attempt in [
-                {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
-                {"lang": "en", "use_gpu": False, "use_angle_cls": False},
-                {"lang": "en", "use_gpu": False},
-                {"lang": "en"},
+                {"lang": "en", "use_gpu": False, "show_log": False,
+                 "ocr_version": "PP-OCRv3", "use_angle_cls": False},
+                {"lang": "en", "use_gpu": False, "show_log": False,
+                 "ocr_version": "PP-OCRv3"},
+                {"lang": "en", "use_gpu": False, "show_log": False},
+                {"lang": "en", "show_log": False},
             ]:
                 try:
                     _paddle_engine = PaddleOCR(**attempt)
+                    print(f"  [OK] PaddleOCR initialized on ARM with: {attempt}")
                     break
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, Exception) as e:
+                    print(f"  [..] PaddleOCR attempt failed ({e}), trying next...")
                     continue
         else:
             for attempt in [
