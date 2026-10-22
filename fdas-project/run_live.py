@@ -561,7 +561,6 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         from notify.voice_call import place_call
         from backend.db import get_connection
         from backend.location import _get_global_contacts, resolve_zone_location
-        from notify.sms_gateway import extract_panel_summary
 
         contacts = _get_global_contacts("sms")
         if not contacts:
@@ -572,16 +571,19 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
 
         detected_code = code if code else (detected_zone if detected_zone else "UNKNOWN")
         loc_name = resolve_zone_location(detected_code)
-        loc_line = f"\nLoc: {loc_name}" if loc_name else ""
+        loc_str = loc_name if loc_name else "Check Panel"
 
-        panel_summary = extract_panel_summary(text)
-        time_line = f"\n{panel_summary}" if panel_summary else ""
-        if message_type == "fire":
-            alert_msg = f"FIRE ALARM\nDevice: {detected_code}{loc_line}{time_line}"
-        elif message_type == "fault":
-            alert_msg = f"FAULT ALERT\nDevice: {detected_code}{loc_line}{time_line}"
-        else:
-            alert_msg = f"{message_type.upper()} ALERT\nDevice: {detected_code}{loc_line}{time_line}"
+        # Extract zone from OCR text
+        import re
+        zone_str = ""
+        zm = re.search(r'\bZone\s*(\d+)\b', text, re.IGNORECASE)
+        if zm:
+            zone_str = f"Zone {zm.group(1)}"
+
+        # Build SMS in standard format
+        type_label = {"fire": "FIRE ALARM", "fault": "FAULT ALERT", "supervisory": "SUPERVISORY ALERT"}.get(
+            message_type, f"{message_type.upper()} ALERT")
+        alert_msg = f"{type_label}\nDevice: {detected_code}\nLoc: {loc_str}\n{zone_str}"
 
         for contact in contacts:
             send_sms(contact, alert_msg, dry_run=dry_run)

@@ -15,9 +15,9 @@ MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = [0, 2, 5]  # short for tests/dry-run; lengthen for production
 
 _MESSAGE_TEMPLATES = {
-    "fire": "FIRE ALARM: {code} [{device_type}] at {location}, Zone: {zone}. Respond immediately.",
-    "fault": "FDAS FAULT: {code} [{device_type}] at {location}, Zone: {zone}. Maintenance check needed.",
-    "supervisory": "FDAS SUPERVISORY: {code} [{device_type}] at {location}, Zone: {zone}. Please review.",
+    "fire": "FIRE ALARM\nDevice: {code}\nLoc: {location}\n{zone}",
+    "fault": "FAULT ALERT\nDevice: {code}\nLoc: {location}\n{zone}",
+    "supervisory": "SUPERVISORY ALERT\nDevice: {code}\nLoc: {location}\n{zone}",
 }
 
 
@@ -168,15 +168,19 @@ def dispatch(
     Sends to every contact in the resolved contact group.
     For fire alarms, builds a clean structured message with device, location, time and zone.
     """
-    if message_type == "fire":
-        panel_summary = extract_panel_summary(raw_text)
-        has_loc = location_name and location_name not in ("Unknown", "Unknown location", "Unknown location (unmapped device)")
-        loc_line = f"\nLoc: {location_name}" if has_loc else ""
-        time_line = f"\n{panel_summary}" if panel_summary else ""
-        message = f"FIRE ALARM\nDevice: {device_code}{loc_line}{time_line}"
-    else:
-        template = _MESSAGE_TEMPLATES.get(message_type, "FDAS ALERT: {code} [{device_type}] at {location}, Zone: {zone}.")
-        message = template.format(code=device_code, location=location_name, device_type=device_type, zone=zone)
+    # Format: "FIRE ALARM\nDevice: L1 AXXX\nLoc: location from sheet\nZone X"
+    has_loc = location_name and location_name not in ("Unknown", "Unknown location", "Unknown location (unmapped device)")
+    loc_str = location_name if has_loc else "Check Panel"
+    zone_str = zone if zone else ""
+    # Extract zone number from raw text if zone field is empty
+    if not zone_str and raw_text:
+        import re
+        zm = re.search(r'\bZone\s*(\d+)\b', raw_text, re.IGNORECASE)
+        if zm:
+            zone_str = f"Zone {zm.group(1)}"
+
+    template = _MESSAGE_TEMPLATES.get(message_type, "FDAS ALERT\nDevice: {code}\nLoc: {location}\n{zone}")
+    message = template.format(code=device_code, location=loc_str, zone=zone_str, device_type=device_type)
 
     success = False
     attempts = 0
