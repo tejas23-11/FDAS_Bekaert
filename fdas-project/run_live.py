@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import sys
 import time
@@ -574,7 +575,6 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         loc_str = loc_name if loc_name else "Check Panel"
 
         # Extract zone from OCR text
-        import re
         zone_str = ""
         zm = re.search(r'\bZone\s*(\d+)\b', text, re.IGNORECASE)
         if zm:
