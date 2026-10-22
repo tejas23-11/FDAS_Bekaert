@@ -63,6 +63,10 @@ def _try_paddle_ocr(image: np.ndarray):
             from paddleocr import PaddleOCR
 
             for attempt in [
+                {"lang": "en", "device": "cpu", "ocr_version": "PP-OCRv3"},
+                {"lang": "en", "ocr_version": "PP-OCRv3"},
+                {"lang": "en", "device": "cpu"},
+                {"lang": "en"},
                 {
                     "lang": "en",
                     "device": "cpu",
@@ -73,12 +77,12 @@ def _try_paddle_ocr(image: np.ndarray):
                 },
                 {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
                 {"lang": "en", "use_gpu": False, "use_angle_cls": False},
-                {"lang": "en"},
+                {"lang": "en", "use_gpu": False},
             ]:
                 try:
                     _paddle_engine = PaddleOCR(**attempt)
                     break
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, Exception):
                     continue
 
         all_texts = []

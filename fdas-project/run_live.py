@@ -233,15 +233,15 @@ def _get_paddle_engine():
         from paddleocr import PaddleOCR
 
         if is_arm:
-            # CRITICAL: Force PP-OCRv3 models on ARM.
-            # PP-OCRv6 (default) uses ops that segfault on aarch64.
+            # CRITICAL: Force PP-OCRv3 models on ARM to avoid segfaults.
+            # Modern PaddleOCR versions (>= 2.8 / 3.x) removed use_gpu and show_log in favor of device="cpu".
             for attempt in [
-                {"lang": "en", "use_gpu": False, "show_log": False,
-                 "ocr_version": "PP-OCRv3", "use_angle_cls": False},
-                {"lang": "en", "use_gpu": False, "show_log": False,
-                 "ocr_version": "PP-OCRv3"},
-                {"lang": "en", "use_gpu": False, "show_log": False},
-                {"lang": "en", "show_log": False},
+                {"lang": "en", "device": "cpu", "ocr_version": "PP-OCRv3"},
+                {"lang": "en", "ocr_version": "PP-OCRv3"},
+                {"lang": "en", "device": "cpu"},
+                {"lang": "en"},
+                {"lang": "en", "use_gpu": False, "ocr_version": "PP-OCRv3"},
+                {"lang": "en", "use_gpu": False},
             ]:
                 try:
                     _paddle_engine = PaddleOCR(**attempt)
@@ -260,15 +260,22 @@ def _get_paddle_engine():
                     "use_doc_unwarping": False,
                     "use_textline_orientation": False,
                 },
+                {"lang": "en", "device": "cpu"},
+                {"lang": "en"},
                 {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
                 {"lang": "en", "use_gpu": False, "use_angle_cls": False},
-                {"lang": "en"},
             ]:
                 try:
                     _paddle_engine = PaddleOCR(**attempt)
                     break
                 except (TypeError, ValueError):
                     continue
+
+        if _paddle_engine is None:
+            print("  [!!] All PaddleOCR init attempts failed.")
+            _paddle_available = False
+            return None
+
         import logging
         import os
         os.environ["GLOG_minloglevel"] = "3"
