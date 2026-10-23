@@ -216,6 +216,39 @@ def _setup_arm_env():
     pass
 
 
+def _tune_onnx_for_arm():
+    """Configure ONNX Runtime sessions to use all available CPU cores on ARM/Pi."""
+    try:
+        import os
+        from onnxruntime import SessionOptions, GraphOptimizationLevel, InferenceSession
+        import rapidocr_onnxruntime.utils as r_utils
+
+        if getattr(r_utils, "_is_tuned", False):
+            return
+
+        threads = max(2, os.cpu_count() or 4)
+
+        def tuned_init(self, config):
+            sess_opt = SessionOptions()
+            sess_opt.log_severity_level = 4
+            sess_opt.enable_cpu_mem_arena = True
+            sess_opt.graph_optimization_level = GraphOptimizationLevel.ORT_ENABLE_ALL
+            sess_opt.intra_op_num_threads = threads
+            sess_opt.inter_op_num_threads = 2
+
+            self._verify_model(config['model_path'])
+            self.session = InferenceSession(
+                config['model_path'],
+                sess_options=sess_opt,
+                providers=['CPUExecutionProvider']
+            )
+
+        r_utils.OrtInferSession.__init__ = tuned_init
+        r_utils._is_tuned = True
+    except Exception:
+        pass
+
+
 def _get_ocr_engine():
     global _ocr_engine, _ocr_available, _paddle_engine, _paddle_available
     if _ocr_available is False:
@@ -225,7 +258,8 @@ def _get_ocr_engine():
 
     try:
         from rapidocr_onnxruntime import RapidOCR
-        _ocr_engine = RapidOCR(use_angle_cls=False)
+        _tune_onnx_for_arm()
+        _ocr_engine = RapidOCR(use_angle_cls=False, limit_side_len=640, limit_type='max')
         _ocr_available = True
         _paddle_engine = _ocr_engine
         _paddle_available = True
@@ -708,10 +742,10 @@ def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: 
     cmd = [
         cam_tool,
         "--nopreview",
-        "-t", "200",
+        "-t", "100",
         "--width", "1920",
         "--height", "1080",
-        "-q", "75",
+        "-q", "70",
         "--denoise", "cdn_off",
         "-o", str(shm_path),
     ]
