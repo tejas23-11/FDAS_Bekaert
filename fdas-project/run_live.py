@@ -401,6 +401,15 @@ def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = No
                                 all_texts.append(t_clean)
                                 all_scores.append(float(text_part[1]))
 
+    # On ARM: reset the engine singleton after every call.
+    # PaddleOCR 3.x on ARM64 corrupts its internal C++ inference state after
+    # the first predict()/ocr() run, causing SIGSEGV on the second call.
+    # Resetting forces a fresh init each cycle — adds ~3s overhead but prevents crash.
+    if is_arm:
+        global _paddle_engine, _paddle_available
+        _paddle_engine = None
+        _paddle_available = None  # allow re-init next cycle
+
     if not all_texts:
         return "", 0.0
 
@@ -558,6 +567,9 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     if zm:
         detected_zone = f"Zone {zm.group(1)}"
 
+    print(f"  [OCR RAW TEXT] {text.strip()}")
+    print(f"  [CODE EXTRACTED] code='{code}', zone='{detected_zone}'")
+
     if not code:
         if message_type == "fire":
             # Only treat as unknown-device fire if the panel text contains confirmed alarm banner phrases
@@ -634,7 +646,9 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
             contacts = ["+919545202660", "+919730814745", "+919561515546", "+919172319233"]
 
         call_contacts = _get_global_contacts("call")
-        primary_contact = call_contacts[0] if call_contacts else contacts[0]
+        raw_primary = call_contacts[0] if call_contacts else (contacts[0] if contacts else "")
+        primary_contact = str(raw_primary.get("phone", "")) if isinstance(raw_primary, dict) else str(raw_primary or "")
+        safe_contacts = [c if isinstance(c, str) else str(c.get("phone", "")) for c in contacts]
 
         detected_code = code if code else (detected_zone if detected_zone else "UNKNOWN")
         loc_name = resolve_zone_location(detected_code)
@@ -651,7 +665,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
             message_type, f"{message_type.upper()} ALERT")
         alert_msg = f"{type_label}\nDevice: {detected_code}\nLoc: {loc_str}\n{zone_str}"
 
-        for contact in contacts:
+        for contact in safe_contacts:
             send_sms(contact, alert_msg, dry_run=dry_run)
 
         # Log to DB as an active event
@@ -669,7 +683,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
                 datetime.now(timezone.utc).isoformat(),
                 confidence,
                 loc_name,
-                json.dumps(contacts),
+                json.dumps(safe_contacts),
                 primary_contact,
             ),
         )

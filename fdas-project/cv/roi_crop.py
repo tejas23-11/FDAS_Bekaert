@@ -29,16 +29,13 @@ import numpy as np
 # Hue 100-130 covers pure blue in OpenCV's 0-179 hue scale.
 # Saturation >= 80 excludes white/grey pixels (low saturation).
 # Value >= 60 excludes very dark pixels (off/standby screen).
-_BLUE_HSV_LOWER = np.array([100, 80, 60],  dtype=np.uint8)
-_BLUE_HSV_UPPER = np.array([130, 255, 255], dtype=np.uint8)
+_BLUE_HSV_LOWER = np.array([85, 50, 40],  dtype=np.uint8)
+_BLUE_HSV_UPPER = np.array([140, 255, 255], dtype=np.uint8)
 
-# The detected LCD rectangle must be at least this fraction of the image
-# area to be trusted (rejects small blue reflections / indicator LEDs).
-_MIN_LCD_AREA_FRACTION = 0.05  # 5% of total image area
+# The detected LCD rectangle must be at least 1% of total image area
+_MIN_LCD_AREA_FRACTION = 0.01
 
-# Small margin (pixels) to trim from each side of the detected rectangle --
-# removes the frame/bezel edge pixels that can bleed into the binarized image.
-_BEZEL_MARGIN = 8
+_BORDER_PADDING = 15
 
 
 def _auto_detect_lcd(frame: np.ndarray) -> tuple[int, int, int, int] | None:
@@ -46,13 +43,6 @@ def _auto_detect_lcd(frame: np.ndarray) -> tuple[int, int, int, int] | None:
     Detect the blue LCD backlight rectangle using HSV thresholding.
 
     Returns (x, y, w, h) of the bounding box, or None if not found.
-
-    Approach (from OpenCV color detection best-practices):
-      1. Convert BGR -> HSV (robust to brightness changes).
-      2. Threshold for blue hue range to build a binary mask.
-      3. Morphological open+close to remove noise and fill gaps.
-      4. Find external contours; pick the largest one.
-      5. Return its axis-aligned bounding rectangle, shrunk by bezel margin.
     """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, _BLUE_HSV_LOWER, _BLUE_HSV_UPPER)
@@ -69,19 +59,19 @@ def _auto_detect_lcd(frame: np.ndarray) -> tuple[int, int, int, int] | None:
     largest = max(contours, key=cv2.contourArea)
     img_area = frame.shape[0] * frame.shape[1]
     if cv2.contourArea(largest) < img_area * _MIN_LCD_AREA_FRACTION:
-        return None  # Too small — probably a stray blue LED reflection
+        return None
 
     x, y, w, h = cv2.boundingRect(largest)
 
-    # Trim bezel margin from all sides
-    m = _BEZEL_MARGIN
-    x, y, w, h = x + m, y + m, w - 2 * m, h - 2 * m
+    # Expand slightly so edge text like 'L2 A138' at bottom right is not clipped
+    p = _BORDER_PADDING
+    img_h, img_w = frame.shape[:2]
+    x_new = max(0, x - p)
+    y_new = max(0, y - p)
+    w_new = min(img_w - x_new, w + 2 * p)
+    h_new = min(img_h - y_new, h + 2 * p)
 
-    # Guard against degenerate rectangles after trimming
-    if w <= 0 or h <= 0:
-        return None
-
-    return x, y, w, h
+    return x_new, y_new, w_new, h_new
 
 
 def crop_screen_region(frame: np.ndarray, screen_roi: dict) -> np.ndarray:

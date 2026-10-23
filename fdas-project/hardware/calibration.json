@@ -6,10 +6,10 @@
     "capture_fps": 1
   },
   "screen_roi": {
-    "x": 50,
+    "x": 350,
     "y": 1100,
-    "width": 830,
-    "height": 520,
+    "width": 730,
+    "height": 820,
     "change_threshold": 8.0
   },
   "debounce": {

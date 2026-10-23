@@ -33,8 +33,11 @@ _KNOWN_DEVICES_PATH = _PROJECT_ROOT / "hardware" / "known_devices.txt"
 #   Short form: "L1/53"    (loop/detector-number only, no alpha prefix letter visible)
 #
 # We match both and normalise to the long form for DB lookup.
-_CODE_LONG  = re.compile(r"L(\d+)\s*([A-Za-z]\d{3})\b")      # "L1 A053" or "L1A101"
-_CODE_SHORT = re.compile(r"L(\d+)\s*[/\\-]\s*(\d{1,3})\b")     # "L1/53", "L1-53", "MCPL1/101"
+# Matches any device code variation:
+# "L2 A138", "L2 A 138", "L2A138", "L2/138", "L2-138", "L1 A053", "L1/53", "L2 138"
+_CODE_PATTERN = re.compile(r"\bL(\d+)\s*[/\\-]?\s*([A-Za-z]?)\s*(\d{1,3})\b")
+_CODE_LONG  = _CODE_PATTERN
+_CODE_SHORT = _CODE_PATTERN
 
 
 def _load_known_devices() -> set[str]:
@@ -121,29 +124,27 @@ def _normalise(text: str) -> str | None:
     """
     upper = text.upper()
     
+    def _match_code(s: str) -> str | None:
+        m = _CODE_PATTERN.search(s)
+        if m:
+            loop = m.group(1)
+            prefix = m.group(2) if m.group(2) else "A"
+            num = m.group(3).zfill(3)
+            return f"L{loop} {prefix.upper()}{num}"
+        return None
+
     # Try raw text first
-    m = _CODE_LONG.search(upper)
-    if m:
-        return f"L{m.group(1)} {m.group(2)}"
-    m = _CODE_SHORT.search(upper)
-    if m:
-        det = m.group(2).zfill(3)
-        return f"L{m.group(1)} A{det}"
+    code = _match_code(upper)
+    if code:
+        return code
     
     # Try with OCR normalization
     normalized = _normalize_ocr_text(text)
     upper_norm = normalized.upper()
     
     if upper_norm != upper:
-        m = _CODE_LONG.search(upper_norm)
-        if m:
-            code = f"L{m.group(1)} {m.group(2)}"
-            print(f"  [OCR-FIX] Normalized text to find code: '{code}'")
-            return code
-        m = _CODE_SHORT.search(upper_norm)
-        if m:
-            det = m.group(2).zfill(3)
-            code = f"L{m.group(1)} A{det}"
+        code = _match_code(upper_norm)
+        if code:
             print(f"  [OCR-FIX] Normalized text to find code: '{code}'")
             return code
     

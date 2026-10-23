@@ -10,9 +10,10 @@ from backend.db import get_connection
 
 def _get_global_contacts(list_type: str) -> list[str]:
     """Fetch the global contact list from notification_contacts table.
-    
-    Returns an empty list if no global list is configured, so the
-    per-device contacts from device_map are used as fallback.
+
+    Filters out junk entries (short strings, dicts from old format) so only
+    real phone numbers (>=10 digits) are returned.
+    Returns an empty list if no global list is configured.
     """
     conn = get_connection()
     row = conn.execute(
@@ -22,9 +23,19 @@ def _get_global_contacts(list_type: str) -> list[str]:
     conn.close()
     if row:
         try:
-            contacts = json.loads(row["contacts"])
-            if contacts:  # Only use if non-empty
-                return contacts
+            raw = json.loads(row["contacts"])
+            if not isinstance(raw, list):
+                return []
+            clean = []
+            for item in raw:
+                if isinstance(item, dict):
+                    phone = str(item.get("phone", "")).strip()
+                else:
+                    phone = str(item).strip()
+                digits = [c for c in phone if c.isdigit()]
+                if len(digits) >= 10:
+                    clean.append(phone)
+            return clean
         except (json.JSONDecodeError, TypeError):
             pass
     return []
@@ -159,6 +170,9 @@ def log_event(event: ResolvedEvent) -> int:
     row id, which notify/ uses to update sms_status/call_status later.
     """
     conn = get_connection()
+    safe_primary = str(event.primary_contact.get("phone", "")) if isinstance(event.primary_contact, dict) else str(event.primary_contact or "")
+    safe_contacts = [c if isinstance(c, str) else str(c.get("phone", "")) for c in (event.contacts or [])]
+
     cur = conn.execute(
         """
         INSERT INTO events (device_code, message_type, raw_text, detected_at, confidence,
@@ -175,8 +189,8 @@ def log_event(event: ResolvedEvent) -> int:
             event.location_name,
             event.zone,
             event.device_type,
-            json.dumps(event.contacts),
-            event.primary_contact,
+            json.dumps(safe_contacts),
+            safe_primary,
             "pending" if event.message_type == "fire" else "not_applicable",
         ),
     )
