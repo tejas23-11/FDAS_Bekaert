@@ -229,9 +229,16 @@ def _get_paddle_engine():
 
         if is_arm:
             for attempt in [
-                {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
-                {"lang": "en", "use_gpu": False, "use_angle_cls": False},
-                {"lang": "en", "use_gpu": False},
+                {
+                    "lang": "en",
+                    "device": "cpu",
+                    "ocr_version": "PP-OCRv3",
+                    "use_doc_orientation_classify": False,
+                    "use_doc_unwarping": False,
+                    "use_textline_orientation": False,
+                },
+                {"lang": "en", "device": "cpu", "ocr_version": "PP-OCRv3"},
+                {"lang": "en", "device": "cpu"},
                 {"lang": "en"},
             ]:
                 try:
@@ -250,8 +257,6 @@ def _get_paddle_engine():
                     "use_doc_unwarping": False,
                     "use_textline_orientation": False,
                 },
-                {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
-                {"lang": "en", "use_gpu": False, "use_angle_cls": False},
                 {"lang": "en"},
             ]:
                 try:
@@ -283,41 +288,45 @@ def _get_paddle_engine():
 
 def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = None) -> tuple[str, float]:
     """
-    Run PaddleOCR on the image or cropped ROI (exact 5dd1152 implementation).
+    Run PaddleOCR on the image or cropped ROI using safe unique file handling.
     """
     engine = _get_paddle_engine()
     if engine is None:
         raise RuntimeError("PaddleOCR not installed")
 
     import numpy as np
-    target = roi if (roi is not None and isinstance(roi, np.ndarray)) else (str(image_path) if image_path is not None else None)
-    if target is None:
+
+    tmp_path = None
+    clean_target = None
+    if roi is not None and isinstance(roi, np.ndarray) and roi.size > 0:
+        shm = Path("/dev/shm")
+        if shm.exists() and os.access(str(shm), os.W_OK):
+            tmp_path = shm / f"paddle_crop_{os.getpid()}_{time.time_ns()}.jpg"
+        else:
+            import tempfile
+            tmp_path = Path(tempfile.gettempdir()) / f"paddle_crop_{os.getpid()}_{time.time_ns()}.jpg"
+        cv2.imwrite(str(tmp_path), roi)
+        clean_target = str(tmp_path)
+    elif image_path is not None and Path(image_path).exists():
+        clean_target = str(image_path)
+    else:
         return "", 0.0
 
     all_texts = []
     all_scores = []
 
-    if hasattr(engine, "predict"):
-        # PaddleOCR 3.x: .predict() API returns dicts with rec_texts/rec_scores
-        try:
-            results = engine.predict(input=target)
-            for result in results:
-                rec_texts = result.get("rec_texts", []) if isinstance(result, dict) else getattr(result, "rec_texts", [])
-                rec_scores = result.get("rec_scores", []) if isinstance(result, dict) else getattr(result, "rec_scores", [])
-                for t, s in zip(rec_texts, rec_scores):
-                    t_clean = str(t).strip()
-                    if t_clean:
-                        all_texts.append(t_clean)
-                        all_scores.append(float(s))
-        except Exception as e:
-            print(f"  [!!] PaddleOCR predict() error: {e}")
-    else:
-        # PaddleOCR 2.x: .ocr() API
-        try:
-            results = engine.ocr(target)
+    try:
+        if hasattr(engine, "predict"):
+            results = engine.predict(clean_target)
+            for res in results:
+                texts, scores = _extract_paddlex_texts(res)
+                all_texts.extend(texts)
+                all_scores.extend(scores)
+        elif hasattr(engine, "ocr"):
+            results = engine.ocr(clean_target)
             if results:
                 for line_group in results:
-                    if line_group is None:
+                    if not line_group:
                         continue
                     for line in line_group:
                         if isinstance(line, (list, tuple)) and len(line) >= 2:
@@ -327,8 +336,15 @@ def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = No
                                 if t_clean:
                                     all_texts.append(t_clean)
                                     all_scores.append(float(text_part[1]))
-        except Exception as e:
-            print(f"  [!!] PaddleOCR ocr() error: {e}")
+    except Exception as e:
+        print(f"  [!!] PaddleOCR exception: {e}")
+    finally:
+        # Clean up temporary file so memory/inodes are never stale
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     if not all_texts:
         return "", 0.0
@@ -747,7 +763,7 @@ def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: 
                     if inbox_cam.exists():
                         process_image(inbox_cam, calibration, dry_run=dry_run)
                     else:
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Camera busy or capture retry...")
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Camera capture retry...")
             except Exception as e:
                 print(f"  [live] Loop error: {e}")
 
