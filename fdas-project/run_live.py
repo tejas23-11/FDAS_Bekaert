@@ -224,11 +224,11 @@ def _get_ocr_engine():
 
     try:
         from rapidocr_onnxruntime import RapidOCR
-        _ocr_engine = RapidOCR()
+        _ocr_engine = RapidOCR(use_angle_cls=False)
         _ocr_available = True
         _paddle_engine = _ocr_engine
         _paddle_available = True
-        print("  [OK] RapidOCR initialized successfully (ONNX Runtime, leak-free)")
+        print("  [OK] RapidOCR initialized successfully (ONNX Runtime, leak-free, fast-mode)")
         return _ocr_engine
     except ImportError:
         try:
@@ -673,7 +673,6 @@ def watch_inbox(calibration: dict, dry_run: bool = False, poll_seconds: float = 
                     print(f"  Moved to: {dest}")
                 except Exception as e:
                     print(f"  [!!] Could not move {image_path}: {e}")
-
             time.sleep(poll_seconds)
     except KeyboardInterrupt:
         print("\n  Stopped watching.")
@@ -697,13 +696,15 @@ def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: 
     print("  [live] RapidOCR ready!\n")
 
     shm_path = Path("/dev/shm/live_cam.jpg")
+    cam_tool = "rpicam-still" if shutil.which("rpicam-still") else "libcamera-still"
     cmd = [
-        "libcamera-still",
+        cam_tool,
         "--nopreview",
-        "-t", "500",
+        "-t", "250",
         "--width", "1920",
         "--height", "1080",
-        "-q", "90",
+        "-q", "80",
+        "--denoise", "cdn_off",
         "-o", str(shm_path),
     ]
 
@@ -719,7 +720,7 @@ def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: 
             shm_path.unlink(missing_ok=True)
 
             try:
-                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=6)
+                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=12)
                 if res.returncode == 0 and shm_path.exists():
                     process_image(shm_path, calibration, dry_run=dry_run)
                 else:
@@ -727,11 +728,15 @@ def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: 
                     inbox_cam = INBOX_DIR / "live_cam.jpg"
                     cmd_inbox = list(cmd)
                     cmd_inbox[-1] = str(inbox_cam)
-                    subprocess.run(cmd_inbox, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=6)
+                    subprocess.run(cmd_inbox, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=12)
                     if inbox_cam.exists():
                         process_image(inbox_cam, calibration, dry_run=dry_run)
                     else:
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Camera capture retry...")
+            except subprocess.TimeoutExpired:
+                print(f"  [live] Camera timed out (>12s). Cleaning up camera processes...")
+                subprocess.run(["pkill", "-9", "-f", cam_tool], stderr=subprocess.DEVNULL)
+                time.sleep(1.0)
             except Exception as e:
                 print(f"  [live] Loop error: {e}")
 

@@ -51,24 +51,31 @@ def _arducam_frame_source() -> Iterator[np.ndarray]:
     import subprocess
 
     shm_path = Path("/dev/shm/fdas_live.jpg")
+    import shutil
+    cam_tool = "rpicam-still" if shutil.which("rpicam-still") else "libcamera-still"
     cmd = [
-        "libcamera-still",
+        cam_tool,
         "--nopreview",
-        "-t", "500",
+        "-t", "250",
         "--width", "1920",
         "--height", "1080",
-        "-q", "90",
+        "-q", "80",
+        "--denoise", "cdn_off",
         "-o", str(shm_path),
     ]
 
-    print("  [capture] Starting Arducam / libcamera continuous capture via RAM buffer...")
+    print(f"  [capture] Starting {cam_tool} continuous capture via RAM buffer...")
     while True:
         try:
-            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=6)
+            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=12)
             if res.returncode == 0 and shm_path.exists():
                 frame = cv2.imread(str(shm_path))
                 if frame is not None:
                     yield frame
+            time.sleep(1.0)
+        except subprocess.TimeoutExpired:
+            print(f"  [capture] Camera capture timed out (>12s). Resetting...")
+            subprocess.run(["pkill", "-9", "-f", cam_tool], stderr=subprocess.DEVNULL)
             time.sleep(1.0)
         except Exception as e:
             print(f"  [capture] Frame capture retry: {e}")

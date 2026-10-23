@@ -28,7 +28,8 @@ def _get_rapid_engine():
         return _rapid_engine
     try:
         from rapidocr_onnxruntime import RapidOCR
-        _rapid_engine = RapidOCR()
+        # use_angle_cls=False speeds up inference significantly since panel is upright
+        _rapid_engine = RapidOCR(use_angle_cls=False)
         return _rapid_engine
     except Exception as e:
         _rapid_import_failed = True
