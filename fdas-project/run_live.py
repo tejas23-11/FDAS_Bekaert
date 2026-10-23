@@ -58,6 +58,7 @@ import cv2
 
 from cv.roi_crop import crop_screen_region
 from cv.classify import classify_message
+from cv.ocr import _run_paddle_inference
 from cv.validate import extract_code, validate_code
 from cv.event import DetectedEvent
 from backend.pipeline import handle_detected_event
@@ -316,14 +317,13 @@ def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = No
     all_scores = []
 
     try:
-        if hasattr(engine, "predict"):
-            results = engine.predict(clean_target)
+        api, results = _run_paddle_inference(engine, clean_target)
+        if api == "predict":
             for res in results:
                 texts, scores = _extract_paddlex_texts(res)
                 all_texts.extend(texts)
                 all_scores.extend(scores)
-        elif hasattr(engine, "ocr"):
-            results = engine.ocr(clean_target)
+        else:
             if results:
                 for line_group in results:
                     if not line_group:

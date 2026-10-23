@@ -14,6 +14,8 @@ Owner: Member 2.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 # ── PaddleOCR (singleton) ─────────────────────────────────────────────
@@ -72,6 +74,17 @@ def _extract_paddlex_texts(res) -> tuple[list[str], list[float]]:
                 except (ValueError, TypeError):
                     scores.append(0.9)
     return texts, scores
+
+
+def _run_paddle_inference(engine: Any, image_path: str) -> tuple[str, Any]:
+    """Use the legacy OCR entry point on ARM; prefer predict elsewhere."""
+    if _is_arm_platform() and hasattr(engine, "ocr"):
+        return "ocr", engine.ocr(image_path)
+    if hasattr(engine, "predict"):
+        return "predict", engine.predict(image_path)
+    if hasattr(engine, "ocr"):
+        return "ocr", engine.ocr(image_path)
+    raise RuntimeError("PaddleOCR engine exposes neither predict() nor ocr()")
 
 
 def _try_paddle_ocr(image: np.ndarray):
@@ -146,14 +159,13 @@ def _try_paddle_ocr(image: np.ndarray):
         all_texts = []
         all_scores = []
 
-        if hasattr(_paddle_engine, "predict"):
-            results = _paddle_engine.predict(clean_target)
+        api, results = _run_paddle_inference(_paddle_engine, clean_target)
+        if api == "predict":
             for res in results:
                 texts, scores = _extract_paddlex_texts(res)
                 all_texts.extend(texts)
                 all_scores.extend(scores)
-        elif hasattr(_paddle_engine, "ocr"):
-            results = _paddle_engine.ocr(clean_target, cls=False)
+        else:
             if results:
                 for line_group in results:
                     if line_group is None:
