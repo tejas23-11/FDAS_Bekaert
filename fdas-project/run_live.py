@@ -48,20 +48,43 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# ── ARM (Raspberry Pi) segfault prevention ────────────────────────────
-# PaddlePaddle's C++ core reads these at MODULE LOAD TIME.
-# They MUST be set BEFORE any import that could pull in paddle.
-os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+# ── ONNX Runtime multi-core tuning (MUST be before any cv.ocr / RapidOCR import) ──
+# On ARM (Raspberry Pi), ONNX Runtime defaults to 1 thread if not patched.
+# We patch OrtInferSession.__init__ HERE, before any RapidOCR session is created.
+def _patch_onnxruntime_threads():
+    try:
+        from onnxruntime import SessionOptions, GraphOptimizationLevel, InferenceSession
+        import rapidocr_onnxruntime.utils as _r_utils
+        if getattr(_r_utils, "_is_tuned", False):
+            return
+        _threads = max(2, os.cpu_count() or 4)
+        def _tuned_init(self, config):
+            _sess_opt = SessionOptions()
+            _sess_opt.log_severity_level = 4
+            _sess_opt.enable_cpu_mem_arena = True
+            _sess_opt.graph_optimization_level = GraphOptimizationLevel.ORT_ENABLE_ALL
+            _sess_opt.intra_op_num_threads = _threads
+            _sess_opt.inter_op_num_threads = 2
+            self._verify_model(config["model_path"])
+            self.session = InferenceSession(
+                config["model_path"],
+                sess_options=_sess_opt,
+                providers=["CPUExecutionProvider"]
+            )
+        _r_utils.OrtInferSession.__init__ = _tuned_init
+        _r_utils._is_tuned = True
+    except Exception:
+        pass
+
+_patch_onnxruntime_threads()
+
+# ── Raspberry Pi environment ──────────────────────────────────────
 _machine = platform.machine().lower()
-# Enable all available CPU cores for ONNX Runtime and OpenCV on Raspberry Pi
 _num_cpus = str(os.cpu_count() or 4)
 os.environ["OMP_NUM_THREADS"] = _num_cpus
 os.environ["OPENBLAS_NUM_THREADS"] = _num_cpus
-if _machine.startswith("aarch64") or _machine.startswith("arm"):
-    os.environ["FLAGS_use_mkldnn"] = "0"
-    os.environ["FLAGS_use_xdnn"] = "0"
 
-# Silence all third-party debug and info loggers (ppocr, paddlex, urllib3, etc.)
+# Silence all third-party debug and info loggers
 logging.disable(logging.INFO)
 os.environ["GLOG_minloglevel"] = "3"
 
@@ -216,39 +239,6 @@ def _setup_arm_env():
     pass
 
 
-def _tune_onnx_for_arm():
-    """Configure ONNX Runtime sessions to use all available CPU cores on ARM/Pi."""
-    try:
-        import os
-        from onnxruntime import SessionOptions, GraphOptimizationLevel, InferenceSession
-        import rapidocr_onnxruntime.utils as r_utils
-
-        if getattr(r_utils, "_is_tuned", False):
-            return
-
-        threads = max(2, os.cpu_count() or 4)
-
-        def tuned_init(self, config):
-            sess_opt = SessionOptions()
-            sess_opt.log_severity_level = 4
-            sess_opt.enable_cpu_mem_arena = True
-            sess_opt.graph_optimization_level = GraphOptimizationLevel.ORT_ENABLE_ALL
-            sess_opt.intra_op_num_threads = threads
-            sess_opt.inter_op_num_threads = 2
-
-            self._verify_model(config['model_path'])
-            self.session = InferenceSession(
-                config['model_path'],
-                sess_options=sess_opt,
-                providers=['CPUExecutionProvider']
-            )
-
-        r_utils.OrtInferSession.__init__ = tuned_init
-        r_utils._is_tuned = True
-    except Exception:
-        pass
-
-
 def _get_ocr_engine():
     global _ocr_engine, _ocr_available, _paddle_engine, _paddle_available
     if _ocr_available is False:
@@ -258,7 +248,6 @@ def _get_ocr_engine():
 
     try:
         from rapidocr_onnxruntime import RapidOCR
-        _tune_onnx_for_arm()
         _ocr_engine = RapidOCR(use_angle_cls=False, limit_side_len=640, limit_type='max')
         _ocr_available = True
         _paddle_engine = _ocr_engine

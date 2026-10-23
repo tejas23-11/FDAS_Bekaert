@@ -12,17 +12,15 @@ from __future__ import annotations
 
 from typing import Any
 from pathlib import Path
+import os
 import numpy as np
 
-# ── RapidOCR (singleton) ──────────────────────────────────────────────
-_rapid_engine = None
-_rapid_import_failed = False
-
-
-def _tune_onnx_for_arm():
-    """Configure ONNX Runtime sessions to use all available CPU cores on ARM/Pi."""
+# ── ONNX Runtime threading tuning (must happen BEFORE any RapidOCR import) ───
+# On ARM (Raspberry Pi), ONNX Runtime defaults to 1 thread if not configured.
+# We patch OrtInferSession.__init__ here at module load time so that when
+# RapidOCR creates its ONNX sessions, they already use all available cores.
+def _patch_onnxruntime_threads():
     try:
-        import os
         from onnxruntime import SessionOptions, GraphOptimizationLevel, InferenceSession
         import rapidocr_onnxruntime.utils as r_utils
 
@@ -38,7 +36,6 @@ def _tune_onnx_for_arm():
             sess_opt.graph_optimization_level = GraphOptimizationLevel.ORT_ENABLE_ALL
             sess_opt.intra_op_num_threads = threads
             sess_opt.inter_op_num_threads = 2
-
             self._verify_model(config['model_path'])
             self.session = InferenceSession(
                 config['model_path'],
@@ -49,7 +46,14 @@ def _tune_onnx_for_arm():
         r_utils.OrtInferSession.__init__ = tuned_init
         r_utils._is_tuned = True
     except Exception:
-        pass
+        pass  # onnxruntime not installed or wrong version — will still work, just slower
+
+
+_patch_onnxruntime_threads()
+
+# ── RapidOCR (singleton) ──────────────────────────────────────────────
+_rapid_engine = None
+_rapid_import_failed = False
 
 
 def _get_rapid_engine():
@@ -60,10 +64,13 @@ def _get_rapid_engine():
     if _rapid_engine is not None:
         return _rapid_engine
     try:
+        # Patch must already be in effect before this import creates ONNX sessions
         from rapidocr_onnxruntime import RapidOCR
-        # use_angle_cls=False speeds up inference significantly since panel is upright
-        _tune_onnx_for_arm()
-        _rapid_engine = RapidOCR(use_angle_cls=False, limit_side_len=640, limit_type='max')
+        _rapid_engine = RapidOCR(
+            use_angle_cls=False,     # panel is upright — skip angle classifier
+            limit_side_len=640,      # cap max dimension to 640px for speed
+            limit_type='max',
+        )
         return _rapid_engine
     except Exception as e:
         _rapid_import_failed = True
@@ -100,7 +107,11 @@ def _try_rapid_ocr(image: np.ndarray | str | Path) -> tuple[str, float] | None:
             max_dim = max(image.shape[:2])
             if max_dim > 960:
                 scale = 960.0 / max_dim
-                target = cv2.resize(image, (int(image.shape[1] * scale), int(image.shape[0] * scale)), interpolation=cv2.INTER_AREA)
+                target = cv2.resize(
+                    image,
+                    (int(image.shape[1] * scale), int(image.shape[0] * scale)),
+                    interpolation=cv2.INTER_AREA
+                )
             else:
                 target = image
         else:
