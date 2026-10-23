@@ -61,7 +61,17 @@ def _try_rapid_ocr(image: np.ndarray | str | Path) -> tuple[str, float] | None:
         return None
 
     try:
-        target = str(image) if hasattr(image, "__fspath__") or isinstance(image, Path) else image
+        import cv2
+        if isinstance(image, np.ndarray) and image.size > 0:
+            max_dim = max(image.shape[:2])
+            if max_dim > 960:
+                scale = 960.0 / max_dim
+                target = cv2.resize(image, (int(image.shape[1] * scale), int(image.shape[0] * scale)), interpolation=cv2.INTER_AREA)
+            else:
+                target = image
+        else:
+            target = str(image) if hasattr(image, "__fspath__") or isinstance(image, Path) else image
+
         results, elapse = engine(target)
         if not results:
             return "", 0.0

@@ -53,12 +53,13 @@ from pathlib import Path
 # They MUST be set BEFORE any import that could pull in paddle.
 os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 _machine = platform.machine().lower()
+# Enable all available CPU cores for ONNX Runtime and OpenCV on Raspberry Pi
+_num_cpus = str(os.cpu_count() or 4)
+os.environ["OMP_NUM_THREADS"] = _num_cpus
+os.environ["OPENBLAS_NUM_THREADS"] = _num_cpus
 if _machine.startswith("aarch64") or _machine.startswith("arm"):
     os.environ["FLAGS_use_mkldnn"] = "0"
     os.environ["FLAGS_use_xdnn"] = "0"
-    os.environ["OMP_NUM_THREADS"] = "1"
-    os.environ["OPENBLAS_NUM_THREADS"] = "1"
-    os.environ["MKL_NUM_THREADS"] = "1"
 
 # Silence all third-party debug and info loggers (ppocr, paddlex, urllib3, etc.)
 logging.disable(logging.INFO)
@@ -263,10 +264,16 @@ def _ocr_rapid(image_path: Path | None, roi=None, calibration: dict | None = Non
         raise RuntimeError("RapidOCR not installed")
 
     import numpy as np
+    t_start = time.time()
 
     target = None
     if roi is not None and isinstance(roi, np.ndarray) and roi.size > 0:
-        target = roi
+        max_dim = max(roi.shape[:2])
+        if max_dim > 960:
+            scale = 960.0 / max_dim
+            target = cv2.resize(roi, (int(roi.shape[1] * scale), int(roi.shape[0] * scale)), interpolation=cv2.INTER_AREA)
+        else:
+            target = roi
     elif image_path is not None and Path(image_path).exists():
         target = str(image_path)
     else:
@@ -315,7 +322,8 @@ def _ocr_rapid(image_path: Path | None, roi=None, calibration: dict | None = Non
 
     text = " ".join(all_texts)
     avg_confidence = sum(all_scores) / len(all_scores) if all_scores else 0.0
-    print(f"  [OK] RapidOCR extracted: '{text}' ({avg_confidence*100:.1f}%)")
+    t_ocr = time.time() - t_start
+    print(f"  [OK] RapidOCR extracted in {t_ocr:.2f}s: '{text}' ({avg_confidence*100:.1f}%)")
     return text, avg_confidence
 
 
@@ -700,10 +708,10 @@ def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: 
     cmd = [
         cam_tool,
         "--nopreview",
-        "-t", "250",
+        "-t", "200",
         "--width", "1920",
         "--height", "1080",
-        "-q", "80",
+        "-q", "75",
         "--denoise", "cdn_off",
         "-o", str(shm_path),
     ]
@@ -716,32 +724,32 @@ def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: 
             except Exception:
                 pass
 
-            t0 = time.time()
+            t_cycle_start = time.time()
             shm_path.unlink(missing_ok=True)
 
+            t_cam_start = time.time()
             try:
-                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=12)
+                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                t_cam = time.time() - t_cam_start
                 if res.returncode == 0 and shm_path.exists():
+                    print(f"  [timing] 📸 Camera capture: {t_cam:.2f}s")
+                    t_proc_start = time.time()
                     process_image(shm_path, calibration, dry_run=dry_run)
+                    t_proc = time.time() - t_proc_start
+                    t_total = time.time() - t_cycle_start
+                    print(f"  [timing] ⚡ Cycle completed in {t_total:.2f}s (Camera: {t_cam:.2f}s, AI: {t_proc:.2f}s)\n")
                 else:
-                    # Fallback to panel_inbox if /dev/shm is not available
-                    inbox_cam = INBOX_DIR / "live_cam.jpg"
-                    cmd_inbox = list(cmd)
-                    cmd_inbox[-1] = str(inbox_cam)
-                    subprocess.run(cmd_inbox, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=12)
-                    if inbox_cam.exists():
-                        process_image(inbox_cam, calibration, dry_run=dry_run)
-                    else:
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Camera capture retry...")
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Camera capture failed (rc={res.returncode}). Retrying in 1s...")
+                    time.sleep(1.0)
             except subprocess.TimeoutExpired:
-                print(f"  [live] Camera timed out (>12s). Cleaning up camera processes...")
+                print(f"  [live] Camera timed out (>10s). Resetting camera interface...")
                 subprocess.run(["pkill", "-9", "-f", cam_tool], stderr=subprocess.DEVNULL)
                 time.sleep(1.0)
             except Exception as e:
                 print(f"  [live] Loop error: {e}")
 
-            elapsed = time.time() - t0
-            sleep_time = max(0.5, interval_seconds - elapsed)
+            elapsed = time.time() - t_cycle_start
+            sleep_time = max(0.2, interval_seconds - elapsed)
             time.sleep(sleep_time)
 
     except KeyboardInterrupt:
