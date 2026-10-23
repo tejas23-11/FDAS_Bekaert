@@ -33,11 +33,12 @@ _KNOWN_DEVICES_PATH = _PROJECT_ROOT / "hardware" / "known_devices.txt"
 #   Short form: "L1/53"    (loop/detector-number only, no alpha prefix letter visible)
 #
 # We match both and normalise to the long form for DB lookup.
-# Matches any device code variation:
-# "L2 A138", "L2 A 138", "L2A138", "L2/138", "L2-138", "L1 A053", "L1/53", "L2 138"
-_CODE_PATTERN = re.compile(r"\bL(\d+)\s*[/\\-]?\s*([A-Za-z]?)\s*(\d{1,3})\b")
+# Matches any device code variation, including intervening characters like 'MCP L2 F A138':
+# Matches "L2 A138", "L2 F A138", "L2 A 138", "L2A138", "L1 A053"
+_CODE_PATTERN = re.compile(r"\bL(\d+)[\s\w/\\-]*?\b([A-Za-z])\s*(\d{1,3})\b")
+_CODE_SHORT_PATTERN = re.compile(r"\bL(\d+)\s*[/\\-]?\s*(\d{1,3})\b")
 _CODE_LONG  = _CODE_PATTERN
-_CODE_SHORT = _CODE_PATTERN
+_CODE_SHORT = _CODE_SHORT_PATTERN
 
 
 def _load_known_devices() -> set[str]:
@@ -125,12 +126,21 @@ def _normalise(text: str) -> str | None:
     upper = text.upper()
     
     def _match_code(s: str) -> str | None:
+        # 1. Match loop and alpha-prefix + number: e.g. "L2 F A138", "L2 A138", "L1 A053"
         m = _CODE_PATTERN.search(s)
         if m:
             loop = m.group(1)
-            prefix = m.group(2) if m.group(2) else "A"
+            prefix = m.group(2).upper()
             num = m.group(3).zfill(3)
-            return f"L{loop} {prefix.upper()}{num}"
+            return f"L{loop} {prefix}{num}"
+
+        # 2. Match short slash/dash form: e.g. "L1/53", "L2/138"
+        m_short = _CODE_SHORT_PATTERN.search(s)
+        if m_short:
+            loop = m_short.group(1)
+            num = m_short.group(2).zfill(3)
+            return f"L{loop} A{num}"
+
         return None
 
     # Try raw text first
