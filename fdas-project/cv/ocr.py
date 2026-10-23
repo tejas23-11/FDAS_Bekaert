@@ -118,7 +118,6 @@ def _try_paddle_ocr(image: np.ndarray):
                     "use_textline_orientation": False,
                 },
                 {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
-                {"lang": "en", "use_gpu": False, "use_angle_cls": False},
                 {"lang": "en", "use_gpu": False},
             ]:
                 try:

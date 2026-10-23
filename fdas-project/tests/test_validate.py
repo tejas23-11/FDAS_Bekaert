@@ -55,6 +55,19 @@ class TestExtractCode(unittest.TestCase):
         text = "First Fire Zone 1 Latest Fire Zone 1 09:57#Zones Fire 1/1 09:57 Zone1 at 09:57 Device MCP 1ST AID RM MCPL1/101 L1A101"
         self.assertEqual(extract_code(text), "L1 A101")
 
+    def test_known_device_wins_over_earlier_ocr_candidate(self):
+        import cv.validate as v
+        original = v._known_devices
+        v._known_devices = {"L1 A053"}
+        try:
+            text = "Fire L1 R138 Zone 1 Device: OPT L1/53 L1 A053"
+            self.assertEqual(extract_code(text), "L1 A053")
+        finally:
+            v._known_devices = original
+
+    def test_zone_number_is_not_a_device_code(self):
+        self.assertIsNone(extract_code("First Fire Zone 1 Device: OPT"))
+
 
 class TestValidateCode(unittest.TestCase):
 

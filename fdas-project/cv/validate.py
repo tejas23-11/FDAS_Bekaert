@@ -35,8 +35,10 @@ _KNOWN_DEVICES_PATH = _PROJECT_ROOT / "hardware" / "known_devices.txt"
 # We match both and normalise to the long form for DB lookup.
 # Matches any device code variation, including intervening characters like 'MCP L2 F A138':
 # Matches "L2 A138", "L2 F A138", "L2 A 138", "L2A138", "L1 A053"
-_CODE_PATTERN = re.compile(r"\bL([0-9ZzSsiIlL])[\s\w/\\-]*?\b([A-Za-z])\s*(\d{1,3})\b")
-_CODE_SHORT_PATTERN = re.compile(r"\bL(\d+)\s*[/\\-]?\s*(\d{1,3})\b")
+_CODE_PATTERN = re.compile(
+    r"\bL([0-9ZzSsiIlL])\s*(?:[A-Za-z]\s+)?([A-Za-z])\s*(\d{1,3})\b"
+)
+_CODE_SHORT_PATTERN = re.compile(r"\bL(\d+)\s*[/\\-]\s*(\d{1,3})\b")
 _CODE_LONG  = _CODE_PATTERN
 _CODE_SHORT = _CODE_SHORT_PATTERN
 
@@ -119,47 +121,31 @@ def _normalize_ocr_text(text: str) -> str:
 
 
 def _normalise(text: str) -> str | None:
-    """Return the canonical 'L<n> <alpha><ddd>' form, or None.
-    
-    Tries the raw text first, then applies OCR normalization if no match.
-    """
-    upper = text.upper()
-    
-    def _match_code(s: str) -> str | None:
-        # 1. Match loop and alpha-prefix + number: e.g. "L2 F A138", "L2 A138", "L1 A053"
-        m = _CODE_PATTERN.search(s)
-        if m:
-            raw_loop = m.group(1).upper()
+    """Return the best canonical device code found in the OCR text, or None."""
+    normalized = _normalize_ocr_text(text)
+    candidates: list[str] = []
+
+    for source in (text.upper(), normalized.upper()):
+        for match in _CODE_PATTERN.finditer(source):
+            raw_loop = match.group(1)
             loop = {"Z": "2", "S": "5", "I": "1", "L": "1", "O": "0"}.get(raw_loop, raw_loop)
-            prefix = m.group(2).upper()
-            num = m.group(3).zfill(3)
-            return f"L{loop} {prefix}{num}"
+            candidates.append(f"L{loop} {match.group(2)}{match.group(3).zfill(3)}")
 
-        # 2. Match short slash/dash form: e.g. "L1/53", "L2/138"
-        m_short = _CODE_SHORT_PATTERN.search(s)
-        if m_short:
-            loop = m_short.group(1)
-            num = m_short.group(2).zfill(3)
-            return f"L{loop} A{num}"
+        for match in _CODE_SHORT_PATTERN.finditer(source):
+            candidates.append(f"L{match.group(1)} A{match.group(2).zfill(3)}")
 
+    if not candidates:
         return None
 
-    # Try raw text first
-    code = _match_code(upper)
-    if code:
-        return code
-    
-    # Try with OCR normalization
-    normalized = _normalize_ocr_text(text)
-    upper_norm = normalized.upper()
-    
-    if upper_norm != upper:
-        code = _match_code(upper_norm)
-        if code:
-            print(f"  [OCR-FIX] Normalized text to find code: '{code}'")
+    # OCR may produce several code-shaped strings; prefer a commissioned device.
+    for code in candidates:
+        if code in _known_devices:
             return code
-    
-    return None
+
+    code = candidates[0]
+    if normalized != text:
+        print(f"  [OCR-FIX] Normalized text to find code: '{code}'")
+    return code
 
 
 def _try_fix_prefix(code: str) -> str | None:

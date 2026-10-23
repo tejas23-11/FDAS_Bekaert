@@ -46,7 +46,9 @@ tests/      Test rig footage, test plans, integration tests            (Member 6
    exact wording — see the note in `cv/classify.py` and
    `hardware/CALIBRATION.md` for the follow-up needed to tighten this.
 5. **Extract code** (`cv/validate.py`) — searches the OCR'd text for a
-   device/zone code, then validates format + known-device-list membership.
+   device code, prefers an exact match from the commissioned device list,
+   and validates format + known-device-list membership. Panel zones are
+   tracked separately and are never substituted for a missing device code.
 6. **Debounce + dedupe** (`backend/debounce.py`) — requires 2+ consistent
    reads before accepting, and suppresses repeat notifications for a
    message that's still on screen. **Keyed on `(device_code, message_type)`**,

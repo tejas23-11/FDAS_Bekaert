@@ -457,6 +457,8 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
 
     paddle_success = False
     try:
+        if _paddle_engine is None and _paddle_available is not False:
+            print("  [OCR] Initializing PaddleOCR; first model load may take a while...", flush=True)
         text, confidence = _ocr_paddle(image_path, roi, calibration)
         if text:
             paddle_success = True
@@ -544,7 +546,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
             return False
 
     # Unique key for deduplicating repeated notifications across continuous frames
-    alert_key = code if code else (detected_zone if detected_zone else "PANEL")
+    alert_key = code or "PANEL"
 
     # ── Deduplication: Suppress repeated alerts for persistent active alarm ──
     if is_duplicate_alert(message_type, alert_key, detected_zone):
@@ -565,7 +567,9 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     print(f"│  {icon} ALARM DETECTED — {message_type.upper():<41}│")
     print(f"├─────────────────────┬────────────────────────────────────────────┤")
     print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
-    print(f"│  Device Code        │ {code or detected_zone or 'PANEL':<43}│")
+    print(f"│  Device Code        │ {code or 'UNKNOWN':<43}│")
+    if detected_zone:
+        print(f"│  Panel Zone         │ {detected_zone:<43}│")
     print(f"│  OCR Confidence     │ {confidence*100:.1f}%{' ' * 37}│")
     print(f"│  Action             │ {action_text:<43}│")
     print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
@@ -586,15 +590,12 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         primary_contact = str(raw_primary.get("phone", "")) if isinstance(raw_primary, dict) else str(raw_primary or "")
         safe_contacts = [c if isinstance(c, str) else str(c.get("phone", "")) for c in contacts]
 
-        detected_code = code if code else (detected_zone if detected_zone else "UNKNOWN")
+        detected_code = code or "UNKNOWN"
         loc_name = resolve_zone_location(detected_code)
         loc_str = loc_name if loc_name else "Check Panel"
 
         # Extract zone from OCR text
-        zone_str = ""
-        zm = re.search(r'\bZone\s*(\d+)\b', text, re.IGNORECASE)
-        if zm:
-            zone_str = f"Zone {zm.group(1)}"
+        zone_str = f"Zone: {detected_zone}" if detected_zone else ""
 
         # Build SMS in standard format
         type_label = {"fire": "FIRE ALARM", "fault": "FAULT ALERT", "supervisory": "SUPERVISORY ALERT"}.get(
