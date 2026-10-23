@@ -35,7 +35,7 @@ _KNOWN_DEVICES_PATH = _PROJECT_ROOT / "hardware" / "known_devices.txt"
 # We match both and normalise to the long form for DB lookup.
 # Matches any device code variation, including intervening characters like 'MCP L2 F A138':
 # Matches "L2 A138", "L2 F A138", "L2 A 138", "L2A138", "L1 A053"
-_CODE_PATTERN = re.compile(r"\bL(\d+)[\s\w/\\-]*?\b([A-Za-z])\s*(\d{1,3})\b")
+_CODE_PATTERN = re.compile(r"\bL([0-9ZzSsiIlL])[\s\w/\\-]*?\b([A-Za-z])\s*(\d{1,3})\b")
 _CODE_SHORT_PATTERN = re.compile(r"\bL(\d+)\s*[/\\-]?\s*(\d{1,3})\b")
 _CODE_LONG  = _CODE_PATTERN
 _CODE_SHORT = _CODE_SHORT_PATTERN
@@ -84,7 +84,7 @@ def _normalize_ocr_text(text: str) -> str:
     for line in lines:
         # Pattern 1: Fix "Li", "Ll", "LI", "Lo" -> "L1", "L0" etc. (loop number)
         line = re.sub(
-            r'\bL([iIlLoOsS])',
+            r'\bL([iIlLoOsSzZ])',
             lambda m: f"L{m.group(1).translate(_LETTER_TO_DIGIT)}",
             line
         )
@@ -129,7 +129,8 @@ def _normalise(text: str) -> str | None:
         # 1. Match loop and alpha-prefix + number: e.g. "L2 F A138", "L2 A138", "L1 A053"
         m = _CODE_PATTERN.search(s)
         if m:
-            loop = m.group(1)
+            raw_loop = m.group(1).upper()
+            loop = {"Z": "2", "S": "5", "I": "1", "L": "1", "O": "0"}.get(raw_loop, raw_loop)
             prefix = m.group(2).upper()
             num = m.group(3).zfill(3)
             return f"L{loop} {prefix}{num}"

@@ -380,61 +380,47 @@ def _extract_paddlex_texts(res) -> tuple[list[str], list[float]]:
 
 def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = None) -> tuple[str, float]:
     """
-    Run PaddleOCR on the image or cropped ROI.
+    Run PaddleOCR on the cropped screen ROI in RAM.
+    Uses engine.ocr() which is rock-solid on ARM64 and does not segfault across continuous loop cycles.
     """
     engine = _get_paddle_engine()
     if engine is None:
         raise RuntimeError("PaddleOCR not installed")
 
     import numpy as np
+    import warnings
 
-    # CRITICAL FOR ARM: Always pass an image file path rather than a sliced NumPy array.
-    # Passing raw non-contiguous NumPy slices from OpenCV cropping directly into PaddleX C++ backend
-    # causes native SIGSEGV (@0x0) pointer access crashes on ARM64.
-    clean_target = None
     if roi is not None and isinstance(roi, np.ndarray) and roi.size > 0:
-        shm = Path("/dev/shm")
-        if shm.exists() and os.access(str(shm), os.W_OK):
-            tmp_path = shm / "paddle_crop_roi.jpg"
-        else:
-            import tempfile
-            tmp_path = Path(tempfile.gettempdir()) / "paddle_crop_roi.jpg"
-        cv2.imwrite(str(tmp_path), roi)
-        clean_target = str(tmp_path)
+        target = np.ascontiguousarray(roi)
     elif image_path is not None and Path(image_path).exists():
-        clean_target = str(image_path)
+        target = str(image_path)
     else:
         return "", 0.0
 
     all_texts = []
     all_scores = []
 
-    if hasattr(engine, "predict"):
-        try:
-            results = engine.predict(clean_target)
-            for res in results:
-                texts, scores = _extract_paddlex_texts(res)
-                all_texts.extend(texts)
-                all_scores.extend(scores)
-        except Exception as e:
-            print(f"  [!!] PaddleOCR predict() exception: {e}")
-    elif hasattr(engine, "ocr"):
-        try:
-            results = engine.ocr(clean_target, cls=False)
-            if results:
-                for line_group in results:
-                    if line_group is None:
-                        continue
-                    for line in line_group:
-                        if isinstance(line, (list, tuple)) and len(line) >= 2:
-                            text_part = line[1]
-                            if isinstance(text_part, (list, tuple)) and len(text_part) >= 2:
-                                t_clean = str(text_part[0]).strip()
-                                if t_clean:
-                                    all_texts.append(t_clean)
-                                    all_scores.append(float(text_part[1]))
-        except Exception as e:
-            print(f"  [!!] PaddleOCR ocr() exception: {e}")
+    # Use engine.ocr() directly (suppressing harmless 3.x DeprecationWarning).
+    # engine.ocr() runs stably in RAM without ARM64 C++ thread-pool segfaults.
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            results = engine.ocr(target, cls=False)
+
+        if results:
+            for line_group in results:
+                if not line_group:
+                    continue
+                for line in line_group:
+                    if isinstance(line, (list, tuple)) and len(line) >= 2:
+                        text_part = line[1]
+                        if isinstance(text_part, (list, tuple)) and len(text_part) >= 2:
+                            t_clean = str(text_part[0]).strip()
+                            if t_clean:
+                                all_texts.append(t_clean)
+                                all_scores.append(float(text_part[1]))
+    except Exception as e:
+        print(f"  [!!] PaddleOCR ocr() exception: {e}")
 
     if not all_texts:
         return "", 0.0
@@ -443,7 +429,6 @@ def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = No
     avg_confidence = sum(all_scores) / len(all_scores) if all_scores else 0.0
     print(f"  [OK] PaddleOCR extracted: '{text}' ({avg_confidence*100:.1f}%)")
     return text, avg_confidence
-
 
 def _ocr_tesseract(roi) -> tuple[str, float]:
     """
