@@ -213,12 +213,6 @@ def _setup_arm_env():
 
 
 def _get_paddle_engine():
-    """Lazily create PaddleOCR engine (singleton, heavy to init).
-
-    On ARM (Raspberry Pi) we apply environment workarounds and use the
-    older, lighter .ocr() API with PP-OCRv3 — the heavy PP-OCRv6 .predict()
-    models are known to segfault on aarch64.
-    """
     global _paddle_engine, _paddle_available
     if _paddle_available is False:
         return None
@@ -227,7 +221,6 @@ def _get_paddle_engine():
 
     is_arm = _is_arm_platform()
 
-    # ARM workaround: set env vars BEFORE importing paddleocr
     if is_arm:
         _setup_arm_env()
 
@@ -235,36 +228,17 @@ def _get_paddle_engine():
         from paddleocr import PaddleOCR
 
         if is_arm:
-            # CRITICAL: Force PP-OCRv3 models on ARM and disable auxiliary models
-            # (doc orientation classifier and unwarping) which segfault on ARM64 CPU.
             for attempt in [
-                {
-                    "lang": "en",
-                    "device": "cpu",
-                    "ocr_version": "PP-OCRv3",
-                    "use_doc_orientation_classify": False,
-                    "use_doc_unwarping": False,
-                    "use_textline_orientation": False,
-                },
-                {
-                    "lang": "en",
-                    "device": "cpu",
-                    "use_doc_orientation_classify": False,
-                    "use_doc_unwarping": False,
-                    "use_textline_orientation": False,
-                },
-                {"lang": "en", "device": "cpu", "ocr_version": "PP-OCRv3"},
-                {"lang": "en", "device": "cpu"},
-                {"lang": "en"},
-                {"lang": "en", "use_gpu": False, "ocr_version": "PP-OCRv3"},
+                {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
+                {"lang": "en", "use_gpu": False, "use_angle_cls": False},
                 {"lang": "en", "use_gpu": False},
+                {"lang": "en"},
             ]:
                 try:
                     _paddle_engine = PaddleOCR(**attempt)
-                    print(f"  [OK] PaddleOCR initialized on ARM with: {attempt}")
+                    print(f"  [OK] PaddleOCR initialized with: {attempt}")
                     break
-                except (TypeError, ValueError, Exception) as e:
-                    print(f"  [..] PaddleOCR attempt failed ({e}), trying next...")
+                except (TypeError, ValueError):
                     continue
         else:
             for attempt in [
@@ -276,28 +250,15 @@ def _get_paddle_engine():
                     "use_doc_unwarping": False,
                     "use_textline_orientation": False,
                 },
-                {
-                    "lang": "en",
-                    "device": "cpu",
-                    "use_doc_orientation_classify": False,
-                    "use_doc_unwarping": False,
-                    "use_textline_orientation": False,
-                },
-                {"lang": "en", "device": "cpu"},
-                {"lang": "en"},
                 {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
                 {"lang": "en", "use_gpu": False, "use_angle_cls": False},
+                {"lang": "en"},
             ]:
                 try:
                     _paddle_engine = PaddleOCR(**attempt)
                     break
                 except (TypeError, ValueError):
                     continue
-
-        if _paddle_engine is None:
-            print("  [!!] All PaddleOCR init attempts failed.")
-            _paddle_available = False
-            return None
 
         import logging
         import os
@@ -320,107 +281,54 @@ def _get_paddle_engine():
         return None
 
 
-def _extract_paddlex_texts(res) -> tuple[list[str], list[float]]:
-    """Extract recognized texts and scores from a PaddleX result object or dict."""
-    texts = []
-    scores = []
-
-    # Try dict or json representation
-    data = None
-    if isinstance(res, dict):
-        data = res
-    elif hasattr(res, "json"):
-        data = res.json
-    elif hasattr(res, "__dict__"):
-        data = res.__dict__
-
-    if isinstance(data, dict):
-        sub = data.get("res", {}) if isinstance(data.get("res"), dict) else data
-        rec_texts = data.get("rec_texts") or sub.get("rec_texts") or []
-        rec_scores = data.get("rec_scores") or sub.get("rec_scores") or []
-        for t, s in zip(rec_texts, rec_scores):
-            t_clean = str(t).strip()
-            if t_clean:
-                texts.append(t_clean)
-                try:
-                    scores.append(float(s))
-                except (ValueError, TypeError):
-                    scores.append(0.9)
-        if texts:
-            return texts, scores
-
-    # Try direct attributes
-    if hasattr(res, "rec_texts"):
-        for t, s in zip(getattr(res, "rec_texts", []), getattr(res, "rec_scores", [])):
-            t_clean = str(t).strip()
-            if t_clean:
-                texts.append(t_clean)
-                try:
-                    scores.append(float(s))
-                except (ValueError, TypeError):
-                    scores.append(0.9)
-        if texts:
-            return texts, scores
-
-    # Try item subscript
-    try:
-        for t, s in zip(res["rec_texts"], res.get("rec_scores", [])):
-            t_clean = str(t).strip()
-            if t_clean:
-                texts.append(t_clean)
-                try:
-                    scores.append(float(s))
-                except (ValueError, TypeError):
-                    scores.append(0.9)
-    except Exception:
-        pass
-
-    return texts, scores
-
-
 def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = None) -> tuple[str, float]:
     """
-    Run PaddleOCR on the cropped screen ROI in RAM.
-    Uses engine.ocr() which is rock-solid on ARM64 and does not segfault across continuous loop cycles.
+    Run PaddleOCR on the image or cropped ROI (exact 5dd1152 implementation).
     """
     engine = _get_paddle_engine()
     if engine is None:
         raise RuntimeError("PaddleOCR not installed")
 
     import numpy as np
-    import warnings
-
-    if roi is not None and isinstance(roi, np.ndarray) and roi.size > 0:
-        target = np.ascontiguousarray(roi)
-    elif image_path is not None and Path(image_path).exists():
-        target = str(image_path)
-    else:
+    target = roi if (roi is not None and isinstance(roi, np.ndarray)) else (str(image_path) if image_path is not None else None)
+    if target is None:
         return "", 0.0
 
     all_texts = []
     all_scores = []
 
-    # Use engine.ocr() directly (suppressing harmless 3.x DeprecationWarning).
-    # engine.ocr() runs stably in RAM without ARM64 C++ thread-pool segfaults.
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            results = engine.ocr(target, cls=False)
-
-        if results:
-            for line_group in results:
-                if not line_group:
-                    continue
-                for line in line_group:
-                    if isinstance(line, (list, tuple)) and len(line) >= 2:
-                        text_part = line[1]
-                        if isinstance(text_part, (list, tuple)) and len(text_part) >= 2:
-                            t_clean = str(text_part[0]).strip()
-                            if t_clean:
-                                all_texts.append(t_clean)
-                                all_scores.append(float(text_part[1]))
-    except Exception as e:
-        print(f"  [!!] PaddleOCR ocr() exception: {e}")
+    if hasattr(engine, "predict"):
+        # PaddleOCR 3.x: .predict() API returns dicts with rec_texts/rec_scores
+        try:
+            results = engine.predict(input=target)
+            for result in results:
+                rec_texts = result.get("rec_texts", []) if isinstance(result, dict) else getattr(result, "rec_texts", [])
+                rec_scores = result.get("rec_scores", []) if isinstance(result, dict) else getattr(result, "rec_scores", [])
+                for t, s in zip(rec_texts, rec_scores):
+                    t_clean = str(t).strip()
+                    if t_clean:
+                        all_texts.append(t_clean)
+                        all_scores.append(float(s))
+        except Exception as e:
+            print(f"  [!!] PaddleOCR predict() error: {e}")
+    else:
+        # PaddleOCR 2.x: .ocr() API
+        try:
+            results = engine.ocr(target)
+            if results:
+                for line_group in results:
+                    if line_group is None:
+                        continue
+                    for line in line_group:
+                        if isinstance(line, (list, tuple)) and len(line) >= 2:
+                            text_part = line[1]
+                            if isinstance(text_part, (list, tuple)) and len(text_part) >= 2:
+                                t_clean = str(text_part[0]).strip()
+                                if t_clean:
+                                    all_texts.append(t_clean)
+                                    all_scores.append(float(text_part[1]))
+        except Exception as e:
+            print(f"  [!!] PaddleOCR ocr() error: {e}")
 
     if not all_texts:
         return "", 0.0
