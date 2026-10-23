@@ -42,7 +42,7 @@ while true; do
   # Touch heartbeat for watchdog
   touch /tmp/fdas_heartbeat 2>/dev/null || true
 
-  # Run fast continuous in-memory monitoring loop (3s interval, PaddleOCR stays in RAM)
+  # Run fast continuous in-memory monitoring loop (3s interval, RapidOCR stays in RAM)
   export PYTHONUNBUFFERED=1
   python3 -u run_live.py --live --interval 3
 

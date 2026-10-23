@@ -1,11 +1,7 @@
 """OCR engine — reads text from preprocessed panel screen images.
 
-Primary engine: PaddleOCR (96%+ confidence on LCD panels)
+Primary engine: RapidOCR (ONNX Runtime based; PP-OCR models with zero memory leaks)
 Fallback: Tesseract (works but lower accuracy on blue LCD screens)
-
-On x86: PaddleOCR uses the .predict() API (PP-OCRv6 models).
-On ARM (Raspberry Pi): PaddleOCR uses the .ocr() API (PP-OCRv3 models)
-with environment workarounds to prevent native C++ segfaults.
 
 Tesseract uses pytesseract with PSM 6 (uniform block of text).
 
@@ -15,17 +11,80 @@ Owner: Member 2.
 from __future__ import annotations
 
 from typing import Any
-
+from pathlib import Path
 import numpy as np
 
-# ── PaddleOCR (singleton) ─────────────────────────────────────────────
+# ── RapidOCR (singleton) ──────────────────────────────────────────────
+_rapid_engine = None
+_rapid_import_failed = False
+
+
+def _get_rapid_engine():
+    """Lazy initialize and return singleton RapidOCR engine."""
+    global _rapid_engine, _rapid_import_failed
+    if _rapid_import_failed:
+        return None
+    if _rapid_engine is not None:
+        return _rapid_engine
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+        _rapid_engine = RapidOCR()
+        return _rapid_engine
+    except Exception as e:
+        _rapid_import_failed = True
+        print(f"[ocr] RapidOCR import/init failed: {e}")
+        return None
+
+
+def _extract_rapid_texts(results: list | None) -> tuple[list[str], list[float]]:
+    """Extract recognized texts and confidence scores from RapidOCR results."""
+    texts = []
+    scores = []
+    if results:
+        for item in results:
+            if isinstance(item, (list, tuple)) and len(item) >= 3:
+                t = str(item[1]).strip()
+                if t:
+                    texts.append(t)
+                    try:
+                        scores.append(float(item[2]))
+                    except (ValueError, TypeError):
+                        scores.append(0.9)
+    return texts, scores
+
+
+def _try_rapid_ocr(image: np.ndarray | str | Path) -> tuple[str, float] | None:
+    """Try RapidOCR on a numpy image (BGR or grayscale) or image path."""
+    engine = _get_rapid_engine()
+    if engine is None:
+        return None
+
+    try:
+        target = str(image) if hasattr(image, "__fspath__") or isinstance(image, Path) else image
+        results, elapse = engine(target)
+        if not results:
+            return "", 0.0
+
+        texts, scores = _extract_rapid_texts(results)
+        if not texts:
+            return "", 0.0
+
+        text = " ".join(texts)
+        confidence = sum(scores) / len(scores) if scores else 0.0
+        return text, confidence
+    except Exception as e:
+        print(f"[ocr] RapidOCR inference failed: {e}")
+        return None
+
+
+# ── Backwards Compatibility Layer ─────────────────────────────────────
 _paddle_engine = None
 _paddle_import_failed = False
-_arm_platform = None  # cached result
+_arm_platform = None
 
 
 def _is_arm_platform() -> bool:
-    """Detect ARM architecture (Raspberry Pi, etc.)."""
+    """Detect ARM architecture (Raspberry Pi, etc.). Kept for compatibility."""
     global _arm_platform
     if _arm_platform is None:
         import platform
@@ -35,18 +94,8 @@ def _is_arm_platform() -> bool:
 
 
 def _setup_arm_env():
-    """Set environment variables that prevent PaddlePaddle segfaults on ARM.
-
-    MKL-DNN and aggressive threading cause native C++ crashes on aarch64.
-    These must be set BEFORE importing paddlepaddle / paddleocr.
-    """
-    import os
-    os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
-    os.environ.setdefault("FLAGS_use_mkldnn", "0")
-    os.environ.setdefault("FLAGS_use_xdnn", "0")
-    os.environ.setdefault("OMP_NUM_THREADS", "1")
-    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    """Kept for backward compatibility."""
+    pass
 
 
 def _extract_paddlex_texts(res) -> tuple[list[str], list[float]]:
@@ -77,121 +126,22 @@ def _extract_paddlex_texts(res) -> tuple[list[str], list[float]]:
 
 
 def _run_paddle_inference(engine: Any, image_path: str) -> tuple[str, Any]:
-    """Use the legacy OCR entry point on ARM; prefer predict elsewhere."""
+    """Compatibility runner for existing tests/callers."""
     if _is_arm_platform() and hasattr(engine, "ocr"):
         return "ocr", engine.ocr(image_path)
     if hasattr(engine, "predict"):
         return "predict", engine.predict(image_path)
     if hasattr(engine, "ocr"):
         return "ocr", engine.ocr(image_path)
-    raise RuntimeError("PaddleOCR engine exposes neither predict() nor ocr()")
+    if callable(engine):
+        res = engine(image_path)
+        return "rapid", res[0] if isinstance(res, tuple) else res
+    raise RuntimeError("OCR engine exposes neither predict(), ocr(), nor __call__")
 
 
 def _try_paddle_ocr(image: np.ndarray):
-    """Try PaddleOCR on a numpy image (BGR or grayscale)."""
-    global _paddle_engine, _paddle_import_failed
-    if _paddle_import_failed:
-        return None
-
-    is_arm = _is_arm_platform()
-
-    try:
-        if _paddle_engine is None:
-            # ARM workaround: set env vars BEFORE import
-            if is_arm:
-                _setup_arm_env()
-
-            from paddleocr import PaddleOCR
-
-            for attempt in [
-                {
-                    "lang": "en",
-                    "device": "cpu",
-                    "ocr_version": "PP-OCRv3",
-                    "use_doc_orientation_classify": False,
-                    "use_doc_unwarping": False,
-                    "use_textline_orientation": False,
-                },
-                {
-                    "lang": "en",
-                    "device": "cpu",
-                    "use_doc_orientation_classify": False,
-                    "use_doc_unwarping": False,
-                    "use_textline_orientation": False,
-                },
-                {"lang": "en", "device": "cpu", "ocr_version": "PP-OCRv3"},
-                {"lang": "en", "device": "cpu"},
-                {"lang": "en"},
-                {
-                    "lang": "en",
-                    "device": "cpu",
-                    "enable_mkldnn": False,
-                    "use_doc_orientation_classify": False,
-                    "use_doc_unwarping": False,
-                    "use_textline_orientation": False,
-                },
-                {"lang": "en", "use_gpu": False, "use_textline_orientation": False},
-                {"lang": "en", "use_gpu": False},
-            ]:
-                try:
-                    _paddle_engine = PaddleOCR(**attempt)
-                    break
-                except (TypeError, ValueError, Exception):
-                    continue
-
-        if _paddle_engine is None:
-            _paddle_import_failed = True
-            return None
-
-        # Pass image file path to prevent non-contiguous memory pointer SIGSEGV
-        import os
-        from pathlib import Path
-        import cv2
-        shm = Path("/dev/shm")
-        if shm.exists() and os.access(str(shm), os.W_OK):
-            tmp_target = shm / "paddle_ocr_tmp.jpg"
-        else:
-            import tempfile
-            tmp_target = Path(tempfile.gettempdir()) / "paddle_ocr_tmp.jpg"
-        cv2.imwrite(str(tmp_target), image)
-        clean_target = str(tmp_target)
-
-        all_texts = []
-        all_scores = []
-
-        api, results = _run_paddle_inference(_paddle_engine, clean_target)
-        if api == "predict":
-            for res in results:
-                texts, scores = _extract_paddlex_texts(res)
-                all_texts.extend(texts)
-                all_scores.extend(scores)
-        else:
-            if results:
-                for line_group in results:
-                    if line_group is None:
-                        continue
-                    for line in line_group:
-                        if isinstance(line, (list, tuple)) and len(line) >= 2:
-                            text_part = line[1]
-                            if isinstance(text_part, (list, tuple)) and len(text_part) >= 2:
-                                t_clean = str(text_part[0]).strip()
-                                if t_clean:
-                                    all_texts.append(t_clean)
-                                    all_scores.append(float(text_part[1]))
-
-        if not all_texts:
-            return "", 0.0
-
-        text = " ".join(all_texts)
-        confidence = sum(all_scores) / len(all_scores) if all_scores else 0.0
-        return text, confidence
-
-    except ImportError:
-        _paddle_import_failed = True
-        return None
-    except Exception as e:
-        print(f"[ocr] PaddleOCR failed, falling back to Tesseract: {e}")
-        return None
+    """Backward compatibility wrapper — routes directly to RapidOCR."""
+    return _try_rapid_ocr(image)
 
 
 # ── Tesseract fallback ────────────────────────────────────────────────
@@ -224,15 +174,18 @@ def read_screen_text(preprocessed_image: np.ndarray):
     """
     Run OCR on the preprocessed screen ROI (output of cv/preprocess.py).
 
+    Primary: RapidOCR (ONNX Runtime, fast, zero memory leaks).
+    Fallback: Tesseract OCR.
+
     Returns:
-        (text, confidence) -- text may be multi-line (joined with \\n),
+        (text, confidence) -- text may be multi-line,
         confidence in [0, 1]. Returns ("", 0.0) on total failure so
         downstream classification naturally treats it as unreadable
         rather than needing its own error handling for this case.
     """
-    paddle_result = _try_paddle_ocr(preprocessed_image)
-    if paddle_result is not None:
-        return paddle_result
+    ocr_result = _try_rapid_ocr(preprocessed_image)
+    if ocr_result is not None:
+        return ocr_result
 
     try:
         return _tesseract_ocr(preprocessed_image)

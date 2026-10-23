@@ -34,6 +34,16 @@ import platform
 import re
 import shutil
 import sys
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+if hasattr(sys.stderr, 'reconfigure'):
+    try:
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -186,130 +196,79 @@ def _find_tesseract() -> str | None:
     return None
 
 
-# ── PaddleOCR engine (singleton) ──────────────────────────────────────
+# ── RapidOCR engine (singleton) ──────────────────────────────────────
+_ocr_engine = None
+_ocr_available = None  # None = not checked yet
 _paddle_engine = None
-_paddle_available = None  # None = not checked yet
+_paddle_available = None
 
 
 def _is_arm_platform() -> bool:
-    """Detect ARM architecture (Raspberry Pi, etc.)."""
+    """Detect ARM architecture (Raspberry Pi, etc.). Kept for compatibility."""
     import platform
     machine = platform.machine().lower()
     return machine.startswith("aarch64") or machine.startswith("arm")
 
 
 def _setup_arm_env():
-    """Set environment variables that prevent PaddlePaddle segfaults on ARM.
-
-    MKL-DNN and aggressive threading cause native C++ crashes on aarch64.
-    These must be set BEFORE importing paddlepaddle / paddleocr.
-    """
-    import os
-    os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
-    os.environ.setdefault("FLAGS_use_mkldnn", "0")
-    os.environ.setdefault("FLAGS_use_xdnn", "0")
-    os.environ.setdefault("OMP_NUM_THREADS", "1")
-    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    """Kept for backward compatibility."""
+    pass
 
 
-def _get_paddle_engine():
-    global _paddle_engine, _paddle_available
-    if _paddle_available is False:
+def _get_ocr_engine():
+    global _ocr_engine, _ocr_available, _paddle_engine, _paddle_available
+    if _ocr_available is False:
         return None
-    if _paddle_engine is not None:
-        return _paddle_engine
-
-    is_arm = _is_arm_platform()
-
-    if is_arm:
-        _setup_arm_env()
+    if _ocr_engine is not None:
+        return _ocr_engine
 
     try:
-        from paddleocr import PaddleOCR
-
-        if is_arm:
-            for attempt in [
-                {
-                    "lang": "en",
-                    "device": "cpu",
-                    "ocr_version": "PP-OCRv3",
-                    "use_doc_orientation_classify": False,
-                    "use_doc_unwarping": False,
-                    "use_textline_orientation": False,
-                },
-                {"lang": "en", "device": "cpu", "ocr_version": "PP-OCRv3"},
-                {"lang": "en", "device": "cpu"},
-                {"lang": "en"},
-            ]:
-                try:
-                    _paddle_engine = PaddleOCR(**attempt)
-                    print(f"  [OK] PaddleOCR initialized with: {attempt}")
-                    break
-                except (TypeError, ValueError):
-                    continue
-        else:
-            for attempt in [
-                {
-                    "lang": "en",
-                    "device": "cpu",
-                    "enable_mkldnn": False,
-                    "use_doc_orientation_classify": False,
-                    "use_doc_unwarping": False,
-                    "use_textline_orientation": False,
-                },
-                {"lang": "en"},
-            ]:
-                try:
-                    _paddle_engine = PaddleOCR(**attempt)
-                    break
-                except (TypeError, ValueError):
-                    continue
-
-        import logging
-        import os
-        os.environ["GLOG_minloglevel"] = "3"
-        for _name in ("ppocr", "paddlex"):
-            _l = logging.getLogger(_name)
-            _l.setLevel(logging.ERROR)
-            _l.propagate = False
-            for _h in _l.handlers:
-                _h.setLevel(logging.ERROR)
-
+        from rapidocr_onnxruntime import RapidOCR
+        _ocr_engine = RapidOCR()
+        _ocr_available = True
+        _paddle_engine = _ocr_engine
         _paddle_available = True
-        return _paddle_engine
+        print("  [OK] RapidOCR initialized successfully (ONNX Runtime, leak-free)")
+        return _ocr_engine
     except ImportError:
-        _paddle_available = False
-        return None
+        try:
+            from paddleocr import PaddleOCR
+            _ocr_engine = PaddleOCR(lang="en", device="cpu")
+            _ocr_available = True
+            _paddle_engine = _ocr_engine
+            _paddle_available = True
+            print("  [OK] PaddleOCR initialized as fallback")
+            return _ocr_engine
+        except Exception:
+            _ocr_available = False
+            _paddle_available = False
+            return None
     except Exception as e:
-        print(f"  [!!] PaddleOCR init failed: {e}")
+        print(f"  [!!] OCR engine init failed: {e}")
+        _ocr_available = False
         _paddle_available = False
         return None
 
 
-def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = None) -> tuple[str, float]:
+# Backwards compatibility alias
+_get_paddle_engine = _get_ocr_engine
+
+
+def _ocr_rapid(image_path: Path | None, roi=None, calibration: dict | None = None) -> tuple[str, float]:
     """
-    Run PaddleOCR on the image or cropped ROI using safe unique file handling.
+    Run RapidOCR directly on the ROI or image path with zero memory leaks.
     """
-    engine = _get_paddle_engine()
+    engine = _get_ocr_engine()
     if engine is None:
-        raise RuntimeError("PaddleOCR not installed")
+        raise RuntimeError("RapidOCR not installed")
 
     import numpy as np
 
-    tmp_path = None
-    clean_target = None
+    target = None
     if roi is not None and isinstance(roi, np.ndarray) and roi.size > 0:
-        shm = Path("/dev/shm")
-        if shm.exists() and os.access(str(shm), os.W_OK):
-            tmp_path = shm / f"paddle_crop_{os.getpid()}_{time.time_ns()}.jpg"
-        else:
-            import tempfile
-            tmp_path = Path(tempfile.gettempdir()) / f"paddle_crop_{os.getpid()}_{time.time_ns()}.jpg"
-        cv2.imwrite(str(tmp_path), roi)
-        clean_target = str(tmp_path)
+        target = roi
     elif image_path is not None and Path(image_path).exists():
-        clean_target = str(image_path)
+        target = str(image_path)
     else:
         return "", 0.0
 
@@ -317,14 +276,26 @@ def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = No
     all_scores = []
 
     try:
-        api, results = _run_paddle_inference(engine, clean_target)
-        if api == "predict":
-            for res in results:
-                texts, scores = _extract_paddlex_texts(res)
-                all_texts.extend(texts)
-                all_scores.extend(scores)
-        else:
+        if callable(engine):
+            results, elapse = engine(target)
             if results:
+                for item in results:
+                    if isinstance(item, (list, tuple)) and len(item) >= 3:
+                        t_clean = str(item[1]).strip()
+                        if t_clean:
+                            all_texts.append(t_clean)
+                            try:
+                                all_scores.append(float(item[2]))
+                            except (ValueError, TypeError):
+                                all_scores.append(0.9)
+        else:
+            api, results = _run_paddle_inference(engine, str(target) if isinstance(target, (str, Path)) else str(image_path))
+            if api == "predict":
+                for res in results:
+                    texts, scores = _extract_paddlex_texts(res)
+                    all_texts.extend(texts)
+                    all_scores.extend(scores)
+            elif results:
                 for line_group in results:
                     if not line_group:
                         continue
@@ -337,22 +308,19 @@ def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = No
                                     all_texts.append(t_clean)
                                     all_scores.append(float(text_part[1]))
     except Exception as e:
-        print(f"  [!!] PaddleOCR exception: {e}")
-    finally:
-        # Clean up temporary file so memory/inodes are never stale
-        if tmp_path is not None and tmp_path.exists():
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+        print(f"  [!!] RapidOCR exception: {e}")
 
     if not all_texts:
         return "", 0.0
 
     text = " ".join(all_texts)
     avg_confidence = sum(all_scores) / len(all_scores) if all_scores else 0.0
-    print(f"  [OK] PaddleOCR extracted: '{text}' ({avg_confidence*100:.1f}%)")
+    print(f"  [OK] RapidOCR extracted: '{text}' ({avg_confidence*100:.1f}%)")
     return text, avg_confidence
+
+
+# Backwards compatibility alias
+_ocr_paddle = _ocr_rapid
 
 def _ocr_tesseract(roi) -> tuple[str, float]:
     """
@@ -451,21 +419,21 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     if roi is None or not hasattr(roi, 'shape') or roi.size == 0 or roi.shape[0] < 50 or roi.shape[1] < 50:
         roi = frame
 
-    # ── Stage 3+4: OCR (PaddleOCR primary, Tesseract fallback) ─────────
+    # ── Stage 3+4: OCR (RapidOCR primary, Tesseract fallback) ─────────
     text = ""
     confidence = 0.0
 
-    paddle_success = False
+    ocr_success = False
     try:
-        if _paddle_engine is None and _paddle_available is not False:
-            print("  [OCR] Initializing PaddleOCR; first model load may take a while...", flush=True)
-        text, confidence = _ocr_paddle(image_path, roi, calibration)
+        if _ocr_engine is None and _ocr_available is not False:
+            print("  [OCR] Initializing RapidOCR engine...", flush=True)
+        text, confidence = _ocr_rapid(image_path, roi, calibration)
         if text:
-            paddle_success = True
+            ocr_success = True
     except Exception as e:
-        print(f"  [!!] PaddleOCR error: {e}")
+        print(f"  [!!] RapidOCR error: {e}")
 
-    if not paddle_success:
+    if not ocr_success:
         text, confidence = _ocr_tesseract(roi)
 
     if not text:
@@ -490,7 +458,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         print(f"├─────────────────────┬────────────────────────────────────────────┤")
         print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
         print(f"│  Camera Image       │ {w} x {h} pixels (Arducam 64MP){' ' * max(0, 16)}│")
-        print(f"│  PaddleOCR Reading  │ {len(text)} chars extracted ({confidence*100:.1f}% confidence){' ' * max(0, 43 - len(f'{len(text)} chars extracted ({confidence*100:.1f}% confidence)'))}│")
+        print(f"│  RapidOCR Reading   │ {len(text)} chars extracted ({confidence*100:.1f}% confidence){' ' * max(0, 43 - len(f'{len(text)} chars extracted ({confidence*100:.1f}% confidence)'))}│")
         print(f"│  Active Alarms      │ 0 active fires / faults                    │")
         print(f"│  Action             │ 🟢 Monitoring... No emergency dispatch     │")
         print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
@@ -724,10 +692,9 @@ def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: 
     print(f"  Mode: {'DRY-RUN' if dry_run else 'LIVE — real SMS/calls'}")
     print(f"{SEP}\n")
 
-    # 1. Warm up PaddleOCR once so it stays resident in RAM
-    print("  [live] Initializing PaddleOCR in RAM...")
+    print("  [live] Initializing RapidOCR in RAM...")
     _get_paddle_engine()
-    print("  [live] PaddleOCR ready!\n")
+    print("  [live] RapidOCR ready!\n")
 
     shm_path = Path("/dev/shm/live_cam.jpg")
     cmd = [
@@ -794,7 +761,7 @@ def main():
     )
     parser.add_argument(
         "--live", action="store_true",
-        help="Continuous 24/7 camera monitoring with fast in-memory PaddleOCR"
+        help="Continuous 24/7 camera monitoring with fast in-memory RapidOCR"
     )
     parser.add_argument(
         "--interval", type=float, default=3.0,

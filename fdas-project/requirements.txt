@@ -3,9 +3,8 @@ opencv-python-headless==4.10.*
 numpy==1.26.*
 
 # OCR (Member 2)
-paddleocr
-paddlepaddle
-pytesseract==0.3.*         # fallback OCR engine if paddleocr is not available
+rapidocr_onnxruntime>=1.2.0   # primary OCR engine (ONNX Runtime, leak-free, fast)
+pytesseract==0.3.*            # fallback OCR engine if rapidocr is not available
 
 # Backend / storage (Member 3)
 # sqlite3 is in the Python standard library — no package needed

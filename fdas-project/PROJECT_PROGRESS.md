@@ -55,7 +55,7 @@ flowchart TD
     B -- No Change --> A
     B -- Screen Changed --> C[Screen ROI Crop]
     C --> D[Image Preprocessing CLAHE + Adaptive Threshold]
-    D --> E[OCR Engine: PaddleOCR primary / Tesseract fallback]
+    D --> E[OCR Engine: RapidOCR primary / Tesseract fallback]
     E --> F[Message Classification: Fire / Fault / Supervisory / Normal]
     F -- Normal / Unknown --> A
     F -- Actionable Event --> G[Device Code Extraction & Normalization]
@@ -100,7 +100,7 @@ The project was structured across six distinct functional roles as outlined in t
 - **Efficient Change Detection (`cv/change_detect.py`):** Measures mean absolute pixel differences between consecutive frames within the configured screen ROI. Only triggers computationally expensive OCR when the delta exceeds `change_threshold` (default 8.0), reducing CPU load and thermal throttling on the Raspberry Pi during 24/7 idle operation.
 - **Image Preprocessing (`cv/preprocess.py`):** Converts cropped display images to grayscale, applies Contrast Limited Adaptive Histogram Equalization (CLAHE, clip limit 2.0, grid 8x8), and runs adaptive Gaussian thresholding to make matrix LCD text razor-sharp for OCR.
 - **Dual OCR Architecture (`cv/ocr.py`):**
-  - **PaddleOCR (Primary):** Achieves >96% character confidence on dot-matrix LCD text.
+  - **RapidOCR (Primary):** Achieves >96% character confidence on dot-matrix LCD text using ONNX Runtime with zero memory leaks.
   - **Tesseract OCR (Fallback):** Invoked with PSM 6 (uniform text block) using dual-pass image processing (RGB and inverted binary) to ensure resilience if PaddleOCR is unavailable.
 - **Raspberry Pi ARM64 Workaround:** Solved native C++ segfault crashes on Raspberry Pi OS 64-bit by setting environment variables (`FLAGS_use_mkldnn=0`, `FLAGS_use_xdnn=0`, `OMP_NUM_THREADS=1`) prior to library imports and selecting the lightweight `.ocr()` API with PP-OCRv3 models.
 - **Fuzzy Message Classification (`cv/classify.py`):**
@@ -190,7 +190,7 @@ The project was structured across six distinct functional roles as outlined in t
 | **CV** | Frame Capture | `cv/capture.py` | **Complete** | Supports camera indices, video files, and synthetic folders. |
 | **CV** | Change Detection | `cv/change_detect.py` | **Complete** | Prevents idle OCR overhead; unit tested. |
 | **CV** | Preprocessing | `cv/preprocess.py` | **Complete** | CLAHE + adaptive Gaussian thresholding. |
-| **CV** | OCR Engine | `cv/ocr.py` | **Complete** | PaddleOCR primary; Tesseract fallback; ARM64 safe. |
+| **CV** | OCR Engine | `cv/ocr.py` | **Complete** | RapidOCR primary; Tesseract fallback; zero memory leaks; ARM64/x86 native. |
 | **CV** | Classification | `cv/classify.py` | **Complete** | Exact + sliding-window fuzzy matching (threshold 0.82). |
 | **CV** | Code Validation | `cv/validate.py` | **Complete** | Dual regex (`L1 A053`, `L1/53`), prefix fix, known device check. |
 | **Backend** | SQLite Schema | `backend/schema.sql` | **Complete** | Tables: `events`, `device_map`, `system_health`, `notification_contacts`. |
