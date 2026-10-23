@@ -324,11 +324,13 @@ def _extract_paddlex_texts(res) -> tuple[list[str], list[float]]:
     """Extract recognized texts and scores from a PaddleX result object or dict."""
     texts = []
     scores = []
+
+    # Try dict or json representation
     data = None
-    if hasattr(res, "json"):
-        data = res.json
-    elif isinstance(res, dict):
+    if isinstance(res, dict):
         data = res
+    elif hasattr(res, "json"):
+        data = res.json
     elif hasattr(res, "__dict__"):
         data = res.__dict__
 
@@ -344,6 +346,35 @@ def _extract_paddlex_texts(res) -> tuple[list[str], list[float]]:
                     scores.append(float(s))
                 except (ValueError, TypeError):
                     scores.append(0.9)
+        if texts:
+            return texts, scores
+
+    # Try direct attributes
+    if hasattr(res, "rec_texts"):
+        for t, s in zip(getattr(res, "rec_texts", []), getattr(res, "rec_scores", [])):
+            t_clean = str(t).strip()
+            if t_clean:
+                texts.append(t_clean)
+                try:
+                    scores.append(float(s))
+                except (ValueError, TypeError):
+                    scores.append(0.9)
+        if texts:
+            return texts, scores
+
+    # Try item subscript
+    try:
+        for t, s in zip(res["rec_texts"], res.get("rec_scores", [])):
+            t_clean = str(t).strip()
+            if t_clean:
+                texts.append(t_clean)
+                try:
+                    scores.append(float(s))
+                except (ValueError, TypeError):
+                    scores.append(0.9)
+    except Exception:
+        pass
+
     return texts, scores
 
 
@@ -379,42 +410,38 @@ def _ocr_paddle(image_path: Path | None, roi=None, calibration: dict | None = No
     all_scores = []
 
     if hasattr(engine, "predict"):
-        # PaddleOCR 3.x: .predict() API
-        results = engine.predict(clean_target)
-        for res in results:
-            texts, scores = _extract_paddlex_texts(res)
-            all_texts.extend(texts)
-            all_scores.extend(scores)
+        try:
+            results = engine.predict(clean_target)
+            for res in results:
+                texts, scores = _extract_paddlex_texts(res)
+                all_texts.extend(texts)
+                all_scores.extend(scores)
+        except Exception as e:
+            print(f"  [!!] PaddleOCR predict() exception: {e}")
     elif hasattr(engine, "ocr"):
-        # PaddleOCR 2.x: .ocr() API returns list of [bbox, (text, score)]
-        results = engine.ocr(clean_target, cls=False)
-        if results:
-            for line_group in results:
-                if line_group is None:
-                    continue
-                for line in line_group:
-                    if isinstance(line, (list, tuple)) and len(line) >= 2:
-                        text_part = line[1]
-                        if isinstance(text_part, (list, tuple)) and len(text_part) >= 2:
-                            t_clean = str(text_part[0]).strip()
-                            if t_clean:
-                                all_texts.append(t_clean)
-                                all_scores.append(float(text_part[1]))
-
-    # On ARM: reset the engine singleton after every call.
-    # PaddleOCR 3.x on ARM64 corrupts its internal C++ inference state after
-    # the first predict()/ocr() run, causing SIGSEGV on the second call.
-    # Resetting forces a fresh init each cycle — adds ~3s overhead but prevents crash.
-    if is_arm:
-        global _paddle_engine, _paddle_available
-        _paddle_engine = None
-        _paddle_available = None  # allow re-init next cycle
+        try:
+            results = engine.ocr(clean_target, cls=False)
+            if results:
+                for line_group in results:
+                    if line_group is None:
+                        continue
+                    for line in line_group:
+                        if isinstance(line, (list, tuple)) and len(line) >= 2:
+                            text_part = line[1]
+                            if isinstance(text_part, (list, tuple)) and len(text_part) >= 2:
+                                t_clean = str(text_part[0]).strip()
+                                if t_clean:
+                                    all_texts.append(t_clean)
+                                    all_scores.append(float(text_part[1]))
+        except Exception as e:
+            print(f"  [!!] PaddleOCR ocr() exception: {e}")
 
     if not all_texts:
         return "", 0.0
 
     text = " ".join(all_texts)
     avg_confidence = sum(all_scores) / len(all_scores) if all_scores else 0.0
+    print(f"  [OK] PaddleOCR extracted: '{text}' ({avg_confidence*100:.1f}%)")
     return text, avg_confidence
 
 
@@ -524,8 +551,8 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         text, confidence = _ocr_paddle(image_path, roi, calibration)
         if text:
             paddle_success = True
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [!!] PaddleOCR error: {e}")
 
     if not paddle_success:
         text, confidence = _ocr_tesseract(roi)
