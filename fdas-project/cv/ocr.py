@@ -20,14 +20,17 @@ import numpy as np
 # We patch OrtInferSession.__init__ here at module load time so that when
 # RapidOCR creates its ONNX sessions, they already use all available cores.
 def _patch_onnxruntime_threads():
+    """Patch RapidOCR ONNX sessions to use all CPU cores. Must run BEFORE RapidOCR is imported."""
     try:
         from onnxruntime import SessionOptions, GraphOptimizationLevel, InferenceSession
         import rapidocr_onnxruntime.utils as r_utils
 
         if getattr(r_utils, "_is_tuned", False):
+            print("  [ONNX] Thread patch already applied", flush=True)
             return
 
         threads = max(2, os.cpu_count() or 4)
+        print(f"  [ONNX] Patching OrtInferSession for {threads} threads...", flush=True)
 
         def tuned_init(self, config):
             sess_opt = SessionOptions()
@@ -45,8 +48,9 @@ def _patch_onnxruntime_threads():
 
         r_utils.OrtInferSession.__init__ = tuned_init
         r_utils._is_tuned = True
-    except Exception:
-        pass  # onnxruntime not installed or wrong version — will still work, just slower
+        print(f"  [ONNX] Patch OK: sessions will use {threads} CPU threads", flush=True)
+    except Exception as e:
+        print(f"  [ONNX] Patch FAILED: {e} -- OCR will run single-threaded!", flush=True)
 
 
 _patch_onnxruntime_threads()
@@ -104,9 +108,11 @@ def _try_rapid_ocr(image: np.ndarray | str | Path) -> tuple[str, float] | None:
     try:
         import cv2
         if isinstance(image, np.ndarray) and image.size > 0:
+            # Aggressively downscale: max 480px on longest side for Pi 4 speed.
+            _MAX_DIM = 480
             max_dim = max(image.shape[:2])
-            if max_dim > 960:
-                scale = 960.0 / max_dim
+            if max_dim > _MAX_DIM:
+                scale = _MAX_DIM / max_dim
                 target = cv2.resize(
                     image,
                     (int(image.shape[1] * scale), int(image.shape[0] * scale)),

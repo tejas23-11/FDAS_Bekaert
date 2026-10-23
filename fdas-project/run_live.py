@@ -52,12 +52,16 @@ from pathlib import Path
 # On ARM (Raspberry Pi), ONNX Runtime defaults to 1 thread if not patched.
 # We patch OrtInferSession.__init__ HERE, before any RapidOCR session is created.
 def _patch_onnxruntime_threads():
+    """Patch RapidOCR ONNX sessions to use all CPU cores. Must run BEFORE RapidOCR is imported."""
     try:
         from onnxruntime import SessionOptions, GraphOptimizationLevel, InferenceSession
         import rapidocr_onnxruntime.utils as _r_utils
         if getattr(_r_utils, "_is_tuned", False):
+            print("  [ONNX] Thread patch already applied", flush=True)
             return
         _threads = max(2, os.cpu_count() or 4)
+        print(f"  [ONNX] Patching OrtInferSession for {_threads} threads...", flush=True)
+
         def _tuned_init(self, config):
             _sess_opt = SessionOptions()
             _sess_opt.log_severity_level = 4
@@ -71,10 +75,12 @@ def _patch_onnxruntime_threads():
                 sess_options=_sess_opt,
                 providers=["CPUExecutionProvider"]
             )
+
         _r_utils.OrtInferSession.__init__ = _tuned_init
         _r_utils._is_tuned = True
-    except Exception:
-        pass
+        print(f"  [ONNX] Patch OK: sessions will use {_threads} CPU threads", flush=True)
+    except Exception as e:
+        print(f"  [ONNX] Patch FAILED: {e} -- OCR will run single-threaded!", flush=True)
 
 _patch_onnxruntime_threads()
 
@@ -289,11 +295,14 @@ def _ocr_rapid(image_path: Path | None, roi=None, calibration: dict | None = Non
     import numpy as np
     t_start = time.time()
 
+    # Aggressively downscale: max 480px on longest side.
+    # Pi 4 ONNX on ARM is ~10x slower than x86 — smaller image = dramatically faster.
+    _MAX_DIM = 480
     target = None
     if roi is not None and isinstance(roi, np.ndarray) and roi.size > 0:
         max_dim = max(roi.shape[:2])
-        if max_dim > 960:
-            scale = 960.0 / max_dim
+        if max_dim > _MAX_DIM:
+            scale = _MAX_DIM / max_dim
             target = cv2.resize(roi, (int(roi.shape[1] * scale), int(roi.shape[0] * scale)), interpolation=cv2.INTER_AREA)
         else:
             target = roi

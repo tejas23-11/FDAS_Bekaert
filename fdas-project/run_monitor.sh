@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# ──────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
 # FDAS 24/7 Live Monitoring Loop for Raspberry Pi + Arducam 64MP
 #
 # Usage:
 #   ./run_monitor.sh         # Start monitoring in background (or run directly)
 #   ./run_monitor.sh --stop  # Stop monitoring and release camera
-# ──────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
 
 FDAS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$FDAS_DIR"
@@ -21,6 +21,7 @@ stop_monitor() {
   pkill -f "run_monitor.sh" 2>/dev/null || true
   pkill -f "run_live.py" 2>/dev/null || true
   pkill -f "libcamera-still" 2>/dev/null || true
+  pkill -f "rpicam-still" 2>/dev/null || true
   rm -f "$PID_FILE"
   echo "[FDAS] Stopped."
 }
@@ -33,19 +34,26 @@ fi
 # Clean up any lingering processes first
 pkill -f "run_live.py" 2>/dev/null || true
 pkill -f "libcamera-still" 2>/dev/null || true
+pkill -f "rpicam-still" 2>/dev/null || true
 
 echo "$$" > "$PID_FILE"
 echo "[FDAS] Starting 24/7 Live Monitoring Pipeline..."
 echo "[FDAS] Logging cleanly to: $LOG_DIR/pipeline.log"
+
+# ── ONNX/OpenMP threading: force all 4 Pi 4 cores ────────────────────
+# Must be set in the shell BEFORE Python starts so OpenMP picks it up.
+export OMP_NUM_THREADS=4
+export OPENBLAS_NUM_THREADS=4
+export OMP_WAIT_POLICY=PASSIVE   # Don't busy-spin idle threads (saves CPU/heat)
+export PYTHONUNBUFFERED=1
 
 while true; do
   # Touch heartbeat for watchdog
   touch /tmp/fdas_heartbeat 2>/dev/null || true
 
   # Run fast continuous in-memory monitoring loop (3s interval, RapidOCR stays in RAM)
-  export PYTHONUNBUFFERED=1
   python3 -u run_live.py --live --interval 3
 
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ Pipeline loop exited. Restarting in 5s..."
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ Pipeline loop exited. Restarting in 5s..."
   sleep 5
 done
