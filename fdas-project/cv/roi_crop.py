@@ -74,23 +74,35 @@ def _auto_detect_lcd(frame: np.ndarray) -> tuple[int, int, int, int] | None:
     return x_new, y_new, w_new, h_new
 
 
-def crop_screen_region(frame: np.ndarray, screen_roi: dict) -> np.ndarray:
+def crop_screen_region(frame: np.ndarray, screen_roi: dict, skip_auto_detect: bool = False) -> np.ndarray:
     """
     Return the cropped LCD region from `frame`.
 
-    Tries HSV-based auto-detection first so that test images taken at
-    arbitrary distances work without manual ROI calibration.  Falls back
-    to the calibration.json bounding box for live camera frames (where
-    the field of view is already controlled by camera mounting).
+    When skip_auto_detect=True and calibrated ROI fits within frame, directly uses calibration
+    to save 1-3s of CPU per frame. Otherwise auto-detects blue LCD screen.
     """
-    detected = _auto_detect_lcd(frame)
-    if detected is not None:
-        x, y, w, h = detected
-        return frame[y:y + h, x:x + w]
-
-    # Calibration fallback
+    img_h, img_w = frame.shape[:2]
     x = screen_roi.get("x", 0)
     y = screen_roi.get("y", 0)
-    w = screen_roi.get("width",  frame.shape[1])
-    h = screen_roi.get("height", frame.shape[0])
-    return frame[y:y + h, x:x + w]
+    w = screen_roi.get("width", img_w)
+    h = screen_roi.get("height", img_h)
+
+    # If calibrated ROI is valid and inside frame, and skip_auto_detect requested:
+    if skip_auto_detect and (x + w <= img_w) and (y + h <= img_h) and w > 50 and h > 50:
+        return frame[y:y + h, x:x + w]
+
+    # Try auto-detect first for arbitrary images or when calibration doesn't fit
+    detected = _auto_detect_lcd(frame)
+    if detected is not None:
+        dx, dy, dw, dh = detected
+        return frame[dy:dy + dh, dx:dx + dw]
+
+    # Calibration fallback clipped to frame
+    x_clip = max(0, min(x, img_w - 1))
+    y_clip = max(0, min(y, img_h - 1))
+    w_clip = min(w, img_w - x_clip)
+    h_clip = min(h, img_h - y_clip)
+    if w_clip > 50 and h_clip > 50:
+        return frame[y_clip:y_clip + h_clip, x_clip:x_clip + w_clip]
+
+    return frame

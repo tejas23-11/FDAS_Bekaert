@@ -56,10 +56,10 @@ def _arducam_frame_source() -> Iterator[np.ndarray]:
     cmd = [
         cam_tool,
         "--nopreview",
-        "-t", "250",
+        "-t", "100",
         "--width", "1920",
         "--height", "1080",
-        "-q", "80",
+        "-q", "60",
         "--denoise", "cdn_off",
         "-o", str(shm_path),
     ]
@@ -72,7 +72,7 @@ def _arducam_frame_source() -> Iterator[np.ndarray]:
                 frame = cv2.imread(str(shm_path))
                 if frame is not None:
                     yield frame
-            time.sleep(1.0)
+            time.sleep(0.5)
         except subprocess.TimeoutExpired:
             print(f"  [capture] Camera capture timed out (>12s). Resetting...")
             subprocess.run(["pkill", "-9", "-f", cam_tool], stderr=subprocess.DEVNULL)
@@ -159,8 +159,8 @@ def run_pipeline(source, calibration: dict, heartbeat: bool = True):
             continue
         previous_frame = frame
 
-        roi = crop_screen_region(frame, calibration["screen_roi"])
-        clean = preprocess_for_ocr(roi)
+        roi = crop_screen_region(frame, calibration["screen_roi"], skip_auto_detect=True)
+        clean = preprocess_for_ocr(roi, upscale=False)
         text, confidence = read_screen_text(clean)
 
         message_type = classify_message(text)

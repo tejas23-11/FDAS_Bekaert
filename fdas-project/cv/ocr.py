@@ -70,11 +70,18 @@ def _get_rapid_engine():
     try:
         # Patch must already be in effect before this import creates ONNX sessions
         from rapidocr_onnxruntime import RapidOCR
-        _rapid_engine = RapidOCR(
-            use_angle_cls=False,     # panel is upright — skip angle classifier
-            limit_side_len=640,      # cap max dimension to 640px for speed
-            limit_type='max',
-        )
+        kwargs = {
+            'use_angle_cls': False,     # panel is upright — skip angle classifier
+            'limit_side_len': 480,      # cap max dimension to 480px for speed
+            'limit_type': 'max',
+        }
+        # Use English-only model if present for lower memory and faster inference
+        models_dir = Path(__file__).resolve().parent.parent / 'models'
+        en_model = models_dir / 'en_PP-OCRv3_rec_infer.onnx'
+        if en_model.exists():
+            kwargs['rec_model_path'] = str(en_model)
+
+        _rapid_engine = RapidOCR(**kwargs)
         return _rapid_engine
     except Exception as e:
         _rapid_import_failed = True
@@ -106,20 +113,9 @@ def _try_rapid_ocr(image: np.ndarray | str | Path) -> tuple[str, float] | None:
         return None
 
     try:
-        import cv2
+        # No manual downscale needed — RapidOCR's limit_side_len=480 handles it internally
         if isinstance(image, np.ndarray) and image.size > 0:
-            # Aggressively downscale: max 480px on longest side for Pi 4 speed.
-            _MAX_DIM = 480
-            max_dim = max(image.shape[:2])
-            if max_dim > _MAX_DIM:
-                scale = _MAX_DIM / max_dim
-                target = cv2.resize(
-                    image,
-                    (int(image.shape[1] * scale), int(image.shape[0] * scale)),
-                    interpolation=cv2.INTER_AREA
-                )
-            else:
-                target = image
+            target = image
         else:
             target = str(image) if hasattr(image, "__fspath__") or isinstance(image, Path) else image
 

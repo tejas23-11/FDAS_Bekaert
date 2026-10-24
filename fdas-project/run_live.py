@@ -48,41 +48,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# ── ONNX Runtime multi-core tuning (MUST be before any cv.ocr / RapidOCR import) ──
-# On ARM (Raspberry Pi), ONNX Runtime defaults to 1 thread if not patched.
-# We patch OrtInferSession.__init__ HERE, before any RapidOCR session is created.
-def _patch_onnxruntime_threads():
-    """Patch RapidOCR ONNX sessions to use all CPU cores. Must run BEFORE RapidOCR is imported."""
-    try:
-        from onnxruntime import SessionOptions, GraphOptimizationLevel, InferenceSession
-        import rapidocr_onnxruntime.utils as _r_utils
-        if getattr(_r_utils, "_is_tuned", False):
-            print("  [ONNX] Thread patch already applied", flush=True)
-            return
-        _threads = max(2, os.cpu_count() or 4)
-        print(f"  [ONNX] Patching OrtInferSession for {_threads} threads...", flush=True)
-
-        def _tuned_init(self, config):
-            _sess_opt = SessionOptions()
-            _sess_opt.log_severity_level = 4
-            _sess_opt.enable_cpu_mem_arena = True
-            _sess_opt.graph_optimization_level = GraphOptimizationLevel.ORT_ENABLE_ALL
-            _sess_opt.intra_op_num_threads = _threads
-            _sess_opt.inter_op_num_threads = 2
-            self._verify_model(config["model_path"])
-            self.session = InferenceSession(
-                config["model_path"],
-                sess_options=_sess_opt,
-                providers=["CPUExecutionProvider"]
-            )
-
-        _r_utils.OrtInferSession.__init__ = _tuned_init
-        _r_utils._is_tuned = True
-        print(f"  [ONNX] Patch OK: sessions will use {_threads} CPU threads", flush=True)
-    except Exception as e:
-        print(f"  [ONNX] Patch FAILED: {e} -- OCR will run single-threaded!", flush=True)
-
-_patch_onnxruntime_threads()
+# ── ONNX Runtime multi-core tuning ──
+# Handled automatically in cv/ocr.py singleton
+import cv.ocr  # noqa: F401
 
 # ── Raspberry Pi environment ──────────────────────────────────────
 _machine = platform.machine().lower()
@@ -98,7 +66,7 @@ import cv2
 
 from cv.roi_crop import crop_screen_region
 from cv.classify import classify_message
-from cv.ocr import _run_paddle_inference
+from cv.ocr import read_screen_text
 from cv.validate import extract_code, validate_code
 from cv.event import DetectedEvent
 from backend.pipeline import handle_detected_event
@@ -424,7 +392,7 @@ def load_calibration(path: str | None = None) -> dict:
         return json.load(f)
 
 
-def process_image(image_path: Path, calibration: dict, dry_run: bool = False) -> bool:
+def process_image(image_path: Path, calibration: dict, dry_run: bool = False, is_live_camera: bool = False) -> bool:
     """
     Run a single panel image through the complete live pipeline.
     Returns True if the image was processed and a notification was triggered.
@@ -441,7 +409,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
         return False
 
     # Apply camera rotation if specified in calibration
-    rot = calibration.get("camera", {}).get("rotation", 0)
+    rot = calibration.get("camera", {}).get("rotation", 0) if is_live_camera else 0
     if rot == 90:
         frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
     elif rot == 180:
@@ -454,7 +422,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     # ── Stage 2: ROI crop ────────────────────────────────────────────
     roi_cfg = calibration.get("screen_roi", {})
     rw, rh = roi_cfg.get("width", 0), roi_cfg.get("height", 0)
-    roi = frame if (rw == 0 or rh == 0) else crop_screen_region(frame, roi_cfg)
+    roi = frame if (rw == 0 or rh == 0) else crop_screen_region(frame, roi_cfg, skip_auto_detect=is_live_camera)
     # Safety: if ROI is out of bounds or empty, fall back to full frame
     if roi is None or not hasattr(roi, 'shape') or roi.size == 0 or roi.shape[0] < 50 or roi.shape[1] < 50:
         roi = frame
@@ -463,17 +431,18 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False) ->
     text = ""
     confidence = 0.0
 
-    ocr_success = False
+    ocr_ran = False
     try:
         if _ocr_engine is None and _ocr_available is not False:
             print("  [OCR] Initializing RapidOCR engine...", flush=True)
         text, confidence = _ocr_rapid(image_path, roi, calibration)
-        if text:
-            ocr_success = True
+        ocr_ran = True
     except Exception as e:
         print(f"  [!!] RapidOCR error: {e}")
 
-    if not ocr_success:
+    # Fall back to Tesseract only if RapidOCR failed to execute (not if it returned empty text on clean screen)
+    if not ocr_ran:
+        print("  [OCR] Falling back to Tesseract...")
         text, confidence = _ocr_tesseract(roi)
 
     if not text:
@@ -718,7 +687,7 @@ def watch_inbox(calibration: dict, dry_run: bool = False, poll_seconds: float = 
         print("\n  Stopped watching.")
 
 
-def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: float = 3.0):
+def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: float = 1.0):
     """
     Continuous 24/7 camera monitoring loop in a single Python process.
     Keeps PaddleOCR loaded in memory, capturing frames via in-memory RAM buffer (/dev/shm).
@@ -743,7 +712,7 @@ def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: 
         "-t", "100",
         "--width", "1920",
         "--height", "1080",
-        "-q", "70",
+        "-q", "60",
         "--denoise", "cdn_off",
         "-o", str(shm_path),
     ]
@@ -766,7 +735,7 @@ def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: 
                 if res.returncode == 0 and shm_path.exists():
                     print(f"  [timing] 📸 Camera capture: {t_cam:.2f}s")
                     t_proc_start = time.time()
-                    process_image(shm_path, calibration, dry_run=dry_run)
+                    process_image(shm_path, calibration, dry_run=dry_run, is_live_camera=True)
                     t_proc = time.time() - t_proc_start
                     t_total = time.time() - t_cycle_start
                     print(f"  [timing] ⚡ Cycle completed in {t_total:.2f}s (Camera: {t_cam:.2f}s, AI: {t_proc:.2f}s)\n")
@@ -809,7 +778,7 @@ def main():
         help="Continuous 24/7 camera monitoring with fast in-memory RapidOCR"
     )
     parser.add_argument(
-        "--interval", type=float, default=3.0,
+        "--interval", type=float, default=1.0,
         help="Seconds between capture cycles (default: 3.0s)"
     )
     parser.add_argument(

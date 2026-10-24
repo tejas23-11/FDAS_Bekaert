@@ -7,3 +7,6 @@ backend/fdas_events.db
 *.log
 .DS_Store
 ui/config.env
+
+models/*.onnx
+panel_inbox/.active_alert_state.json

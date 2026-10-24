@@ -18,7 +18,7 @@ Blue-LCD-aware pipeline (confirmed against real Honeywell panel photos, 2026-09)
 import cv2
 
 
-def preprocess_for_ocr(roi):
+def preprocess_for_ocr(roi, upscale: bool = True):
     """
     Blue-LCD-aware preprocessing pipeline:
       1. Extract RED channel  -> high contrast white-on-blue
@@ -32,9 +32,12 @@ def preprocess_for_ocr(roi):
     # 1. Extract the red channel (OpenCV BGR: index 2 = red)
     red = roi[:, :, 2]
 
-    # 2. Upscale 2x — improves character resolution for Tesseract
+    # 2. Upscale 2x — improves character resolution for Tesseract (use faster INTER_LINEAR)
     h, w = red.shape[:2]
-    upscaled = cv2.resize(red, (w * 2, h * 2), interpolation=cv2.INTER_LANCZOS4)
+    if upscale:
+        upscaled = cv2.resize(red, (w * 2, h * 2), interpolation=cv2.INTER_LINEAR)
+    else:
+        upscaled = red
 
     # 3. Fixed threshold: red > 120 = text (white pixels), else = blue background
     _, binary = cv2.threshold(upscaled, 120, 255, cv2.THRESH_BINARY)
