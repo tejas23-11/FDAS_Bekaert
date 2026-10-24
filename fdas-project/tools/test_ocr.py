@@ -57,7 +57,7 @@ def load_calibration():
     return {}
 
 
-def test_image(image_path: Path, no_crop: bool = False):
+def test_image(image_path: Path, no_crop: bool = False, rotate: int | None = None):
     if not image_path.exists():
         print(f"❌ Error: File not found: {image_path}")
         return
@@ -73,10 +73,27 @@ def test_image(image_path: Path, no_crop: bool = False):
         return
 
     h, w = img.shape[:2]
-    print(f"  Dimensions: {w} x {h} px")
+    print(f"  Original:   {w} x {h} px")
 
     calib = load_calibration()
     screen_roi = calib.get("screen_roi", {})
+
+    # Auto-apply camera mounting rotation from calibration for camera captures, or user flag
+    rot = rotate
+    if rot is None and ("live_cam" in image_path.name or "fdas_live" in image_path.name):
+        rot = calib.get("camera", {}).get("rotation", 0)
+
+    if rot == 90:
+        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        print(f"  Rotation:   90° clockwise (per camera calibration)")
+    elif rot == 180:
+        img = cv2.rotate(img, cv2.ROTATE_180)
+        print(f"  Rotation:   180°")
+    elif rot == 270:
+        img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        print(f"  Rotation:   270°")
+
+    h, w = img.shape[:2]
 
     # ROI crop
     if no_crop:
@@ -146,10 +163,11 @@ def main():
     parser = argparse.ArgumentParser(description="Test RapidOCR text extraction on panel images")
     parser.add_argument("image", nargs="?", default=None, help="Path to image file")
     parser.add_argument("--no-crop", action="store_true", help="Do not crop LCD ROI, test on full image")
+    parser.add_argument("--rotate", type=int, choices=[0, 90, 180, 270], default=None, help="Rotate image before OCR (e.g. 90)")
     args = parser.parse_args()
 
     if args.image:
-        test_image(Path(args.image), no_crop=args.no_crop)
+        test_image(Path(args.image), no_crop=args.no_crop, rotate=args.rotate)
     else:
         # Check panel_inbox for latest image
         inbox = _PROJECT_ROOT / "panel_inbox"
@@ -160,12 +178,12 @@ def main():
         )
         if images:
             print(f"Using latest inbox image: {images[0].name}")
-            test_image(images[0], no_crop=args.no_crop)
+            test_image(images[0], no_crop=args.no_crop, rotate=args.rotate)
         else:
             sample = _PROJECT_ROOT / "tests" / "real_panel.jpg"
             if sample.exists():
                 print(f"Using sample image: {sample.name}")
-                test_image(sample, no_crop=args.no_crop)
+                test_image(sample, no_crop=args.no_crop, rotate=args.rotate)
             else:
                 print("Usage: python tools/test_ocr.py <path_to_image>")
 
