@@ -609,7 +609,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False, is
         if message_type == "fire" and primary_contact:
             place_call(event_id, primary_contact, dry_run=dry_run)
 
-        mark_alert_active(message_type, alert_key, panel_summary, zone=detected_zone)
+        mark_alert_active(message_type, alert_key, alert_msg, zone=detected_zone)
         return True
 
     event = DetectedEvent(

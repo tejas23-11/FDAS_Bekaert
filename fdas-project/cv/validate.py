@@ -39,6 +39,7 @@ _CODE_PATTERN = re.compile(
     r"\bL([0-9ZzSsiIlL])\s*(?:[A-Za-z]\s+)?([A-Za-z])\s*(\d{1,3})\b"
 )
 _CODE_SHORT_PATTERN = re.compile(r"\bL(\d+)\s*[/\\-]\s*(\d{1,3})\b")
+_CODE_BARE_PATTERN = re.compile(r"\b([A-Za-z])\s*(\d{2,3})\b")
 _CODE_LONG  = _CODE_PATTERN
 _CODE_SHORT = _CODE_SHORT_PATTERN
 
@@ -133,6 +134,20 @@ def _normalise(text: str) -> str | None:
 
         for match in _CODE_SHORT_PATTERN.finditer(source):
             candidates.append(f"L{match.group(1)} A{match.group(2).zfill(3)}")
+
+    # If no L-prefixed code found, search for bare code like 'A053' (e.g. 'OPT A053')
+    if not candidates:
+        for source in (text.upper(), normalized.upper()):
+            for match in _CODE_BARE_PATTERN.finditer(source):
+                prefix = match.group(1).upper()
+                num = match.group(2).zfill(3)
+                # Check known devices for any loop (L1, L2, L3, L4)
+                for loop in ("1", "2", "3", "4"):
+                    cand = f"L{loop} {prefix}{num}"
+                    if cand in _known_devices:
+                        candidates.append(cand)
+                if not candidates:
+                    candidates.append(f"L1 {prefix}{num}")
 
     if not candidates:
         return None
