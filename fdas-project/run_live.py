@@ -119,8 +119,7 @@ def _save_alert_state(state: dict | None):
 def is_duplicate_alert(message_type: str, alert_key: str, detected_zone: str = "") -> bool:
     """
     Check if the detected alert matches or is covered by the currently active alarm.
-    Prevents OCR fluctuations (e.g. oscillating between 'UNKNOWN', 'Zone 1', and 'L1 A053')
-    from repeatedly spamming SMS and placing repetitive phone calls.
+    Prevents OCR fluctuations from repeatedly spamming SMS and placing repetitive phone calls.
     """
     active = _load_alert_state()
     if not active:
@@ -131,8 +130,24 @@ def is_duplicate_alert(message_type: str, alert_key: str, detected_zone: str = "
     if active_type != message_type:
         return False
 
+    # Auto-expire active alarm state after 5 minutes (300s) to prevent permanent alert suppression
+    try:
+        ts_str = active.get("timestamp")
+        if ts_str:
+            alert_time = datetime.fromisoformat(ts_str)
+            if (datetime.now() - alert_time).total_seconds() > 300:
+                clear_active_alert()
+                return False
+    except Exception:
+        pass
+
     active_key = active.get("key", "")
     active_zone = active.get("zone", "")
+
+    # If previous alert was generic ('UNKNOWN' or 'PANEL') and new frame detected a real device code:
+    # This is an UPGRADE with real location details, NOT a duplicate! Send the notification!
+    if active_key in ("PANEL", "UNKNOWN", "") and alert_key not in ("PANEL", "UNKNOWN", ""):
+        return False
 
     # 1. Exact match on alert key
     if active_key == alert_key:
@@ -143,11 +158,7 @@ def is_duplicate_alert(message_type: str, alert_key: str, detected_zone: str = "
     if alert_key in ("PANEL", "UNKNOWN", ""):
         return True
 
-    # 3. If the active alarm was recorded as generic or fallback, do not re-alert on same panel alarm
-    if active_key in ("PANEL", "UNKNOWN", ""):
-        return True
-
-    # 4. If both have zones and they are the same zone
+    # 3. If both have zones and they are the same zone
     if detected_zone and active_zone and detected_zone == active_zone:
         return True
 
@@ -487,17 +498,8 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False, is
 
     if not code:
         if message_type == "fire":
-            # Only treat as unknown-device fire if the panel text contains confirmed alarm banner phrases
-            if any(h in text.lower() for h in ("first fire", "latest fire", "fire 1/", "fire 2/", "fire at")):
-                unknown_device = True
-            else:
-                print(f"┌{'─' * 66}┐")
-                print(f"│  FDAS STATUS: ℹ️  FIRE KEYWORD WITHOUT VALID ALARM BANNER       │")
-                print(f"├─────────────────────┬────────────────────────────────────────────┤")
-                print(f"│  Extracted Text     │ {text[:42]:<43}│")
-                print(f"│  Status             │ Ignored (no device code or alarm banner)   │")
-                print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
-                return False
+            # Real fire alert: always notify even if device code is partially obscured!
+            unknown_device = True
         elif message_type == "fault":
             # Real fault displayed on panel (e.g. system fault, zone fault, supply fault)
             unknown_device = True
@@ -709,10 +711,10 @@ def run_live_camera(calibration: dict, dry_run: bool = False, interval_seconds: 
     cmd = [
         cam_tool,
         "--nopreview",
-        "-t", "100",
+        "-t", "200",
         "--width", "1920",
         "--height", "1080",
-        "-q", "60",
+        "-q", "80",
         "--denoise", "cdn_off",
         "-o", str(shm_path),
     ]

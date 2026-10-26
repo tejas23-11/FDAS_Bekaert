@@ -72,7 +72,7 @@ def _get_rapid_engine():
         from rapidocr_onnxruntime import RapidOCR
         kwargs = {
             'use_angle_cls': False,     # panel is upright — skip angle classifier
-            'limit_side_len': 480,      # cap max dimension to 480px for speed
+            'limit_side_len': 640,      # cap max dimension to 480px for speed
             'limit_type': 'max',
         }
         # Use English-only model if present for lower memory and faster inference

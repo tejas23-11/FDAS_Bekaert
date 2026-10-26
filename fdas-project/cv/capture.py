@@ -56,10 +56,10 @@ def _arducam_frame_source() -> Iterator[np.ndarray]:
     cmd = [
         cam_tool,
         "--nopreview",
-        "-t", "100",
+        "-t", "200",
         "--width", "1920",
         "--height", "1080",
-        "-q", "60",
+        "-q", "80",
         "--denoise", "cdn_off",
         "-o", str(shm_path),
     ]

@@ -1,61 +1,42 @@
 """
 Classifies the OCR'd text from the Honeywell fire-alarm panel screen.
 
-Vocabulary updated from the real panel photo (Bekaert site, 2026-08):
-  Fire state    → "Fire", "First Fire", "Latest Fire"
-  Fault state   → "Fault", "System Fault", "Sounder Fault", "Supply Fault",
-                  "Earth Fault"
-  Supervisory   → "Disablement", "Delayed Mode", "Sounders Disabled",
-                  "Fire TX Disabled"
-  Normal/idle   → no alarm/fault keywords present
-
-Keywords are lower-case strings.  Direct substring match is tried first
-(exact wording wins immediately); fuzzy matching is the fallback for OCR
-noise or minor formatting differences.  The threshold (0.82) and keyword
-lists are easy to tighten once real panel wording is fully catalogued --
-see hardware/CALIBRATION.md.
-
 Owner: Member 2
 """
 
 from __future__ import annotations
 
+import re
 import difflib
 
 # ---------------------------------------------------------------------------
-# Vocabulary (tighten when real panel wording is confirmed for every state)
+# Vocabulary
 # ---------------------------------------------------------------------------
 _VOCABULARY: dict[str, list[str]] = {
     "fire": [
-        # Confirmed from site photo
         "fire",
         "first fire",
         "latest fire",
-        # Generic / inferred backups
         "smoke",
         "heat",
         "manual call point",
         "mcp",
     ],
     "fault": [
-        # Confirmed from site photo button labels
         "fault",
         "system fault",
         "sounder fault",
         "supply fault",
         "earth fault",
-        # Generic backups
         "trouble",
         "detector fault",
     ],
     "supervisory": [
-        # Confirmed from site photo button labels
         "disablement",
         "delayed mode",
         "sounders disabled",
         "fire tx disabled",
         "fire tx activated",
-        # Generic backups
         "supervisory",
         "prealarm",
         "pre-alarm",
@@ -65,33 +46,26 @@ _VOCABULARY: dict[str, list[str]] = {
     ],
 }
 
-_FUZZY_THRESHOLD = 0.82   # raise toward 0.9 once vocabulary is final
+_FUZZY_THRESHOLD = 0.82
 
 
 def classify_message(text: str) -> str:
     """
     Takes OCR'd raw text and returns one of:
     ``fire`` | ``fault`` | ``supervisory`` | ``normal`` | ``unknown``.
-
-    Strategy:
-      1. Exact substring match (fastest, wins immediately).
-      2. Fuzzy word-level match via difflib SequenceMatcher.
-      3. "normal" / "secure" / "system normal" fallback.
-      4. Default to ``unknown``.
     """
-    if not text:
+    if not text or not text.strip():
         return "unknown"
 
-    text_lower = text.lower()
+    text_lower = text.lower().strip()
 
-    import re
-
-    # --- Guard: Strip static plastic faceplate labels & cabinet branding ---
-    # The words "FIRE FAULT..." printed below or on the LCD bezel are plastic labels, not fire!
+    # --- Guard: Strip static cabinet branding & painted faceplate labels ---
     faceplate_patterns = [
         r"\bfire\s+fault\s+(?:disablement\s+)?buzzer\s+muted.*",
         r"\bfire\s+fault\s+buzzer\s+muted.*",
         r"\b(?:system\s+fault\s+)?delayed\s+mode\s+sounders\s+silenced.*",
+        r"\bfire\s+fault\s+(?:power|test|areal)?\b",
+        r"\bfire\s+fault\b",
         r"\bfire\s+alarm\s+control\s+panel\b",
         r"\bfire\s+alarm\s+system\b",
         r"\bhoneywell\s+fire\b",
@@ -100,20 +74,22 @@ def classify_message(text: str) -> str:
         r"\bfire\s+protection\b",
     ]
     for pat in faceplate_patterns:
-        text_lower = re.sub(pat, "", text_lower).strip()
+        text_lower = re.sub(pat, "", text_lower).strip(" -:\t\r\n")
 
     # If all detected text was just static faceplate labels, it's normal / idle
     if not text_lower:
         return "normal"
 
+    # Single isolated static word check (e.g. only 'fire' or 'fault' or 'power' on bezel)
+    if re.match(r"^(?:fire|fault|power|test|buzzer|muted)$", text_lower):
+        return "normal"
+
     # --- Guard: Prealarm is a supervisory warning, NOT a confirmed fire ---
-    # e.g. "Prealarm Zone1 1/1 at 20:29 Device: OPT L1 A053..."
     if any(kw in text_lower for kw in ("prealarm", "pre-alarm", "pre alarm")):
         return "supervisory"
 
-    # --- Step 1: Confirmed Active Fire Alarm Banner ----------------------
-    # Active fire event indicators that definitively signify an active fire
-    active_fire_patterns = (
+    # --- Step 1: Confirmed Active Fire Alarm Banner (Definitive) ----------
+    definitive_fire = (
         "first fire",
         "latest fire",
         "fire 1/",
@@ -126,51 +102,47 @@ def classify_message(text: str) -> str:
         "fire alarm active",
         "fire evacuation",
     )
-    if any(p in text_lower for p in active_fire_patterns):
+    if any(p in text_lower for p in definitive_fire):
         return "fire"
 
-    has_active_fire_count = re.search(r"fires?\s*[\(\[]\s*([1-9]\d*)\s*[\)\]]", text_lower)
-    if has_active_fire_count:
+    if re.search(r"fires?\s*[\(\[]\s*([1-9]\d*)\s*[\)\]]", text_lower):
         return "fire"
 
-    # --- Step 2: Honeywell idle / status menu ----------------------------
-    # If the screen is the Honeywell status menu ([Status] 1 Fires (0) 2 Faults (0) 3 Disabled (0)...)
+    # --- Step 2: Confirmed Fault Banners (e.g. 'Fault 1/1', 'Detector Fault in Fire Zone') ---
+    explicit_fault_banners = (
+        "fault 1/", "fault 2/", "fault 3/", "fault at",
+        "detector fault", "fault in fire", "loop fault",
+        "sounder fault", "supply fault", "earth fault",
+        "battery fault", "open circuit", "short circuit"
+    )
+    if any(kw in text_lower for kw in explicit_fault_banners):
+        return "fault"
+
+    # --- Step 3: Active Fire Context (Fire + Zone, or Fire + Timestamp, or Fire + Device) ---
+    if re.search(r"\bfire\s+zone\b", text_lower) or re.search(r"\bfire\b.*\bzone\s*[:#-]?\s*\d+", text_lower):
+        return "fire"
+    if re.search(r"\bfire\b.*\b(?:at\s*)?\d{1,2}:\d{2}\b", text_lower):
+        return "fire"
+    if re.search(r"\bfire\b.*\b(opt|mcp|sd|l\d|a\d{2,3})\b", text_lower):
+        return "fire"
+
+    # --- Step 4: Honeywell idle / status menu ----------------------------
     if "[status]" in text_lower or re.search(r"fires?\s*[\(\[]\s*0\b", text_lower):
-        has_active_fault = re.search(r"faults?\s*[\(\[]\s*([1-9]\d*)\s*[\)\]]", text_lower)
+        has_active_fault = re.search(r"faults?\s*[\(\[]\s*([1-9]\d*)", text_lower)
         if has_active_fault:
             return "fault"
-        has_active_dis = re.search(r"disabled\s*[\(\[]\s*([1-9]\d*)\s*[\)\]]", text_lower)
+        has_active_dis = re.search(r"disabled\s*[\(\[]\s*([1-9]\d*)", text_lower)
         if has_active_dis:
             return "supervisory"
         return "normal"
 
-    # --- Step 3: Confirmed Fault Indicators ------------------------------
-    # Even if "fire" appears as part of a device/loop name ("Fire Loop 1 Fault",
-    # "Honeywell Fire Panel Fault"), presence of fault keywords means it's a FAULT, not a fire!
-    fault_keywords = (
-        "system fault",
-        "sounder fault",
-        "supply fault",
-        "earth fault",
-        "detector fault",
-        "loop fault",
-        "power fault",
-        "battery fault",
-        "open circuit",
-        "short circuit",
-        "fault 1/",
-        "fault 2/",
-        "fault at",
-        "trouble",
-    )
-    if any(kw in text_lower for kw in fault_keywords):
+    # --- Step 5: Remaining Fault Keywords --------------------------------
+    if "system fault" in text_lower or "trouble" in text_lower:
         return "fault"
-
-    # Single-word "fault" or "faults" check
     if re.search(r"\bfaults?\b", text_lower):
         return "fault"
 
-    # --- Step 4: Supervisory / Disablement -------------------------------
+    # --- Step 6: Supervisory / Disablement -------------------------------
     supervisory_keywords = (
         "disablement",
         "delayed mode",
@@ -184,7 +156,7 @@ def classify_message(text: str) -> str:
     if any(kw in text_lower for kw in supervisory_keywords):
         return "supervisory"
 
-    # --- Step 5: Isolated fire keywords ----------------------------------
+    # --- Step 7: Isolated fire keywords ----------------------------------
     if re.search(r"\b(fire|smoke|heat|mcp|manual call point)\b", text_lower):
         return "fire"
 
@@ -196,7 +168,6 @@ def classify_message(text: str) -> str:
     for category, keywords in _VOCABULARY.items():
         for keyword in keywords:
             kw_words = keyword.split()
-            # Single-word keyword: compare against every word in OCR text
             if len(kw_words) == 1:
                 for word in words:
                     ratio = difflib.SequenceMatcher(None, keyword, word).ratio()
@@ -204,7 +175,6 @@ def classify_message(text: str) -> str:
                         best_score = ratio
                         best_category = category
             else:
-                # Multi-word keyword: compare as a phrase against a sliding window
                 for i in range(len(words) - len(kw_words) + 1):
                     phrase = " ".join(words[i : i + len(kw_words)])
                     ratio = difflib.SequenceMatcher(None, keyword, phrase).ratio()
@@ -217,6 +187,10 @@ def classify_message(text: str) -> str:
 
     # --- Pass 3: normal / idle -------------------------------------------
     if any(tok in text_lower for tok in ("normal", "secure", "system normal", "all clear", "status")):
+        return "normal"
+
+    # Pure date/time / punctuation
+    if re.match(r"^[\d\s:\/\.\-]+$", text_lower):
         return "normal"
 
     return "unknown"
