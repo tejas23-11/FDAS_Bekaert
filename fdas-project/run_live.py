@@ -127,6 +127,11 @@ def is_duplicate_alert(message_type: str, alert_key: str, detected_zone: str = "
 
     active_type = active.get("message_type")
     # If a fault is active and a fire breaks out, that is an escalation -> not duplicate
+    if active_type == "fault" and message_type == "fire":
+        return False
+    if active_type == "fire" and message_type == "fault":
+        # While fire is active, suppress secondary fault chatter to avoid spamming
+        return True
     if active_type != message_type:
         return False
 
