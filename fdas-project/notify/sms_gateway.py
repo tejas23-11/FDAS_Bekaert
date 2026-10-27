@@ -48,20 +48,29 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
     ser = None
     try:
         ser = _serial_port()
-        # Cancel any pending SMS prompt from previously aborted operations
+        # Escape any aborted command / prompt on modem
         ser.write(b"\x1B\r\n")
-        time.sleep(0.2)
+        time.sleep(0.3)
         ser.reset_input_buffer()
         ser.reset_output_buffer()
 
+        # Ping modem with AT handshake to ensure port is responsive
+        for _ in range(3):
+            ser.write(b"AT\r\n")
+            time.sleep(0.2)
+            resp = ser.read(ser.in_waiting)
+            if b"OK" in resp:
+                break
+            time.sleep(0.2)
+
         # Ensure standard GSM charset, text mode, standard CSMP parameters and CS routing
-        ser.write(b'AT+CSCS="GSM"\r')
+        ser.write(b'AT+CSCS="GSM"\r\n')
         time.sleep(0.2)
-        ser.write(b'AT+CMGF=1\r')
+        ser.write(b'AT+CMGF=1\r\n')
         time.sleep(0.2)
-        ser.write(b'AT+CSMP=17,167,0,0\r')
+        ser.write(b'AT+CSMP=17,167,0,0\r\n')
         time.sleep(0.2)
-        ser.write(b'AT+CGSMS=1\r')
+        ser.write(b'AT+CGSMS=1\r\n')
         time.sleep(0.2)
         ser.read(ser.in_waiting)  # flush response
 
@@ -75,12 +84,13 @@ def send_sms(to_number: str, message: str, dry_run: bool = True) -> bool:
 
         # Set recipient and wait specifically for '>' prompt
         clean_number = "".join(c for c in to_number if c.isdigit() or c == "+")
+        ser.reset_input_buffer()
         ser.write(f'AT+CMGS="{clean_number}"\r'.encode('ascii', errors='ignore'))
 
         prompt_found = False
         start_t = time.time()
         buf = b""
-        while time.time() - start_t < 3.0:
+        while time.time() - start_t < 5.0:
             if ser.in_waiting:
                 buf += ser.read(ser.in_waiting)
                 if b">" in buf:

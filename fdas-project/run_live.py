@@ -135,17 +135,6 @@ def is_duplicate_alert(message_type: str, alert_key: str, detected_zone: str = "
     if active_type != message_type:
         return False
 
-    # Auto-expire active alarm state after 5 minutes (300s) to prevent permanent alert suppression
-    try:
-        ts_str = active.get("timestamp")
-        if ts_str:
-            alert_time = datetime.fromisoformat(ts_str)
-            if (datetime.now() - alert_time).total_seconds() > 300:
-                clear_active_alert()
-                return False
-    except Exception:
-        pass
-
     active_key = active.get("key", "")
     active_zone = active.get("zone", "")
 
