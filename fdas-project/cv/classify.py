@@ -48,6 +48,41 @@ _VOCABULARY: dict[str, list[str]] = {
 
 _FUZZY_THRESHOLD = 0.82
 
+# ---------------------------------------------------------------------------
+# Zero-count patterns: detect "Fire(0)", "Fire 0/0", "Fires (0)", etc.
+# These appear on Morley-IAS / Honeywell idle status screens and should
+# NOT be treated as active alarms.
+# ---------------------------------------------------------------------------
+_ZERO_COUNT_FIRE_RE = re.compile(
+    r"\bfires?\s*[\(\[:]?\s*0(?:\s*[/\\]\s*0)?\s*[\)\]]?",
+    re.IGNORECASE,
+)
+_ZERO_COUNT_FAULT_RE = re.compile(
+    r"\bfaults?\s*[\(\[:]?\s*0(?:\s*[/\\]\s*0)?\s*[\)\]]?",
+    re.IGNORECASE,
+)
+
+
+def _has_only_zero_count(text: str, category: str) -> bool:
+    """
+    Return True if every mention of 'fire' or 'fault' in the text is a
+    zero-count status indicator (e.g. Fire(0), Faults 0/0).
+    """
+    if category == "fire":
+        # Check if there is any mention of fire that is NOT zero-count
+        zero_stripped = _ZERO_COUNT_FIRE_RE.sub("", text)
+        # Also strip cabinet/panel branding so "fire alarm system" doesn't count
+        zero_stripped = re.sub(r"\bfire\s+alarm\s+(?:system|panel)\b", "", zero_stripped, flags=re.IGNORECASE)
+        zero_stripped = re.sub(r"\bfire\s+tx\b", "", zero_stripped, flags=re.IGNORECASE)
+        zero_stripped = re.sub(r"\bfire\s+loop\b", "", zero_stripped, flags=re.IGNORECASE)
+        # If after stripping zero-counts and branding, no "fire" remains, it's zero-only
+        return not re.search(r"\bfire\b", zero_stripped, re.IGNORECASE)
+    elif category == "fault":
+        zero_stripped = _ZERO_COUNT_FAULT_RE.sub("", text)
+        zero_stripped = re.sub(r"\bfire\s+tx\s+fault\b", "", zero_stripped, flags=re.IGNORECASE)
+        return not re.search(r"\bfault\b", zero_stripped, re.IGNORECASE)
+    return False
+
 
 def classify_message(text: str) -> str:
     """
@@ -111,7 +146,7 @@ def classify_message(text: str) -> str:
 
     # Fallback for First Fire / Latest Fire banners without Fault
     if any(p in text_lower for p in ("first fire", "latest fire")):
-        if "[status]" not in text_lower and not re.search(r"fires?\s*[\(\[]\s*0\b", text_lower):
+        if "[status]" not in text_lower and not _has_only_zero_count(text_lower, "fire"):
             return "fire"
 
     # Supervisory checks (e.g. 'Disablement 1/1')
@@ -119,7 +154,7 @@ def classify_message(text: str) -> str:
         return "supervisory"
 
     # Honeywell idle status menu: '[Status] 1Fires (0 ...'
-    if "[status]" in text_lower or re.search(r"fires?\s*[\(\[]\s*0\b", text_lower):
+    if "[status]" in text_lower or _has_only_zero_count(text_lower, "fire"):
         if re.search(r"faults?\s*[\(\[]\s*([1-9]\d*)", text_lower):
             return "fault"
         if re.search(r"disabled\s*[\(\[]\s*([1-9]\d*)", text_lower):
@@ -181,6 +216,10 @@ def classify_message(text: str) -> str:
                         best_category = category
 
     if best_category and best_score >= _FUZZY_THRESHOLD:
+        # Guard: Don't return fire/fault if the only mentions are zero-count
+        # status indicators (e.g. "Fire(0)", "Fault(0)", "Fires 0/0")
+        if best_category in ("fire", "fault") and _has_only_zero_count(text_lower, best_category):
+            return "normal"
         return best_category
 
     # --- Pass 3: normal / idle ---

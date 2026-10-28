@@ -83,6 +83,45 @@ class TestClassify(unittest.TestCase):
         # Cabinet branding title without alarm
         self.assertEqual(classify_message("HONEYWELL FIRE ALARM SYSTEM"), "normal")
 
+    # --- zero-count false positive guards ---
+    def test_classify_fire_zero_parentheses(self):
+        # Panel shows Fire(0) — healthy, no active fires
+        self.assertEqual(classify_message("Fire(0) Fault(0) Disablement(0)"), "normal")
+
+    def test_classify_fire_zero_space_parentheses(self):
+        # OCR might read "Fire (0)" with a space
+        self.assertEqual(classify_message("Fire (0) Fault (0)"), "normal")
+
+    def test_classify_fires_zero(self):
+        # Plural form: "Fires(0)"
+        self.assertEqual(classify_message("Fires(0) Faults(0)"), "normal")
+
+    def test_classify_fire_zero_slash(self):
+        # Pattern like "Fire 0/0" meaning 0 out of 0
+        self.assertEqual(classify_message("Fire 0/0 Fault 0/0"), "normal")
+
+    def test_classify_fire_zero_with_bezel_text(self):
+        # Full OCR capture with zero-count fire + bezel button labels
+        sample = "Fire(0) Fault(0) FIRE FAULT DISABLEMENT BUZZER MUTED SYSTEM FAULT POWER"
+        self.assertEqual(classify_message(sample), "normal")
+
+    def test_classify_fault_nonzero_fire_zero(self):
+        # Fire(0) but Fault has a real count — should be fault
+        self.assertEqual(classify_message("Fire(0) Fault(3)"), "fault")
+
+    def test_classify_real_fire_not_suppressed(self):
+        # Real active fire must still be detected even when zero-count guard exists
+        self.assertEqual(classify_message("Fire 1/1 at 09:37"), "fire")
+
+    def test_classify_real_fire_with_zone(self):
+        # Multi-line OCR with real fire event
+        sample = "First Fire Zone 1 09:37 #Zones 1 Latest Fire Zone 1 09:37 1 Fire 1/1 at 09:37"
+        self.assertEqual(classify_message(sample), "fire")
+
+    def test_classify_real_fault_not_suppressed(self):
+        # Real active fault must still be detected
+        self.assertEqual(classify_message("Fault 1/6 at 11:29"), "fault")
+
     # --- unknown ---
     def test_classify_empty(self):
         self.assertEqual(classify_message(""), "unknown")
