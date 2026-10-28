@@ -459,28 +459,15 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False, is
         print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
         return False
 
-    # ── Stage 5: Classify ────────────────────────────────────────────
-    message_type = classify_message(text)
-    if message_type in ("normal", "unknown"):
-        if message_type == "normal":
-            if _load_alert_state():
-                print("  [FDAS] Panel returned to NORMAL. Cleared active alert state.")
-                clear_active_alert()
-        status_label = "✅ NORMAL (All Clear)" if message_type == "normal" else f"ℹ️  {message_type.upper()}"
-        print(f"┌{'─' * 66}┐")
-        print(f"│  FDAS PANEL STATUS: {status_label:<44}│")
-        print(f"├─────────────────────┬────────────────────────────────────────────┤")
-        print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
-        print(f"│  Camera Image       │ {w} x {h} pixels (Arducam 64MP){' ' * max(0, 16)}│")
-        print(f"│  RapidOCR Reading   │ {len(text)} chars extracted ({confidence*100:.1f}% confidence){' ' * max(0, 43 - len(f'{len(text)} chars extracted ({confidence*100:.1f}% confidence)'))}│")
-        print(f"│  Active Alarms      │ 0 active fires / faults                    │")
-        print(f"│  Action             │ 🟢 Monitoring... No emergency dispatch     │")
-        print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
-        return False
-
-    # ── Stage 6: Extract & validate device code ──────────────────────
+    # ── Stage 5: Extract device code FIRST ─────────────────────────────
+    # On Morley-IAS panels, "First Fire" / "Latest Fire" banners are ALWAYS
+    # present in lines 1-2 even during faults or healthy operation.
+    # The reliable indicators are:
+    #   - A device code in the lower lines (e.g. "L1 A053", "L1 A066")
+    #   - Line 3 showing "Fire X/Y at HH:MM" or "Fault X/Y at HH:MM"
+    # Strategy: check for a device code first. If none exists, the panel
+    # is showing a status/idle screen → treat as normal.
     code = extract_code(text)
-    unknown_device = False
 
     detected_zone = ""
     zm = re.search(r'(?:\bZone|#Zones?)\s*[:#-]?\s*(\d+)\b', text, re.IGNORECASE)
@@ -491,35 +478,52 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False, is
     print(f"  [CODE EXTRACTED] code='{code}', zone='{detected_zone}'")
 
     if not code:
-        if message_type == "fire":
-            # Real fire alert: always notify even if device code is partially obscured!
-            unknown_device = True
-        elif message_type == "fault":
-            # Real fault displayed on panel (e.g. system fault, zone fault, supply fault)
-            unknown_device = True
-        else:
-            print(f"┌{'─' * 66}┐")
-            print(f"│  FDAS STATUS: ⚠️  {message_type.upper()} (NO DEVICE CODE FOUND)           │")
-            print(f"├─────────────────────┬────────────────────────────────────────────┤")
-            print(f"│  Extracted Text     │ {text[:42]:<43}│")
-            print(f"│  Status             │ No valid device code extracted             │")
-            print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
-            return False
+        # No device code found → panel is likely on a status/idle screen.
+        # Clear any active alert if transitioning back to normal.
+        if _load_alert_state():
+            print("  [FDAS] No device code detected. Panel likely returned to NORMAL. Cleared active alert state.")
+            clear_active_alert()
+        print(f"┌{'─' * 66}┐")
+        print(f"│  FDAS PANEL STATUS: ✅ NORMAL (No Device Code Detected)          │")
+        print(f"├─────────────────────┬────────────────────────────────────────────┤")
+        print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
+        print(f"│  Camera Image       │ {w} x {h} pixels (Arducam 64MP){' ' * max(0, 16)}│")
+        print(f"│  RapidOCR Reading   │ {len(text)} chars extracted ({confidence*100:.1f}% confidence){' ' * max(0, 43 - len(f'{len(text)} chars extracted ({confidence*100:.1f}% confidence)'))}│")
+        print(f"│  Active Alarms      │ 0 — No device code = no active alarm      │")
+        print(f"│  Action             │ 🟢 Monitoring... No emergency dispatch     │")
+        print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
+        return False
 
-    if code and not validate_code(code):
-        if message_type in ("fire", "fault"):
-            unknown_device = True
-        else:
-            print(f"┌{'─' * 66}┐")
-            print(f"│  FDAS STATUS: ⚠️  INVALID CODE: {code:<39}│")
-            print(f"├─────────────────────┬────────────────────────────────────────────┤")
-            print(f"│  Extracted Text     │ {text[:42]:<43}│")
-            print(f"│  Status             │ Device code failed whitelist validation    │")
-            print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
-            return False
+    # ── Stage 6: Classify Line 3 (only reached when device code exists) ──
+    message_type = classify_message(text)
+
+    # Even with a device code present, if classifier says normal/unknown,
+    # it means line 3 doesn't show an active Fire/Fault event.
+    if message_type in ("normal", "unknown"):
+        if _load_alert_state():
+            print("  [FDAS] Panel returned to NORMAL. Cleared active alert state.")
+            clear_active_alert()
+        status_label = "✅ NORMAL (All Clear)" if message_type == "normal" else f"ℹ️  {message_type.upper()}"
+        print(f"┌{'─' * 66}┐")
+        print(f"│  FDAS PANEL STATUS: {status_label:<44}│")
+        print(f"├─────────────────────┬────────────────────────────────────────────┤")
+        print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
+        print(f"│  Camera Image       │ {w} x {h} pixels (Arducam 64MP){' ' * max(0, 16)}│")
+        print(f"│  RapidOCR Reading   │ {len(text)} chars extracted ({confidence*100:.1f}% confidence){' ' * max(0, 43 - len(f'{len(text)} chars extracted ({confidence*100:.1f}% confidence)'))}│")
+        print(f"│  Device Code        │ {code:<43}│")
+        print(f"│  Active Alarms      │ 0 active fires / faults                    │")
+        print(f"│  Action             │ 🟢 Monitoring... No emergency dispatch     │")
+        print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
+        return False
+
+    # ── Stage 7: Validate device code ─────────────────────────────────
+    unknown_device = False
+    if not validate_code(code):
+        # Code found but not in known-devices list — still proceed for fire/fault
+        unknown_device = True
 
     # Unique key for deduplicating repeated notifications across continuous frames
-    alert_key = code or "PANEL"
+    alert_key = code
 
     # ── Deduplication: Suppress repeated alerts for persistent active alarm ──
     if is_duplicate_alert(message_type, alert_key, detected_zone):
@@ -540,14 +544,14 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False, is
     print(f"│  {icon} ALARM DETECTED — {message_type.upper():<41}│")
     print(f"├─────────────────────┬────────────────────────────────────────────┤")
     print(f"│  Time               │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<43}│")
-    print(f"│  Device Code        │ {code or 'UNKNOWN':<43}│")
+    print(f"│  Device Code        │ {code:<43}│")
     if detected_zone:
         print(f"│  Panel Zone         │ {detected_zone:<43}│")
     print(f"│  OCR Confidence     │ {confidence*100:.1f}%{' ' * 37}│")
     print(f"│  Action             │ {action_text:<43}│")
     print(f"└─────────────────────┴────────────────────────────────────────────┘\n")
 
-    # ── Stage 7: Create event + route through backend ────────────────
+    # ── Stage 8: Create event + route through backend ────────────────
     if unknown_device:
         from notify.sms_gateway import send_sms
         from notify.voice_call import place_call
@@ -563,7 +567,7 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False, is
         primary_contact = str(raw_primary.get("phone", "")) if isinstance(raw_primary, dict) else str(raw_primary or "")
         safe_contacts = [c if isinstance(c, str) else str(c.get("phone", "")) for c in contacts]
 
-        detected_code = code or "UNKNOWN"
+        detected_code = code
         loc_name = resolve_zone_location(detected_code)
         loc_str = loc_name if loc_name else "Check Panel"
 
