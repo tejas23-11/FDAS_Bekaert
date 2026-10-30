@@ -133,7 +133,39 @@ def classify_message(text: str) -> str:
         or "fault in fire" in text_lower
     )
 
-    # Line 3 active event resolution
+    # -------------------------------------------------------------------------
+    # 1b. DUAL-GATE: Device code (bottom) + bare FAULT/FIRE keyword (Line 3)
+    # -------------------------------------------------------------------------
+    # On this Morley-IAS panel the screen layout is fixed:
+    #   Line 3        -> active event type ("Fire 1/1 at ..." OR "Fault 1/2 at ...")
+    #   Bottom lines  -> device code ("L1 A053", "MCP A103", "L1/53")
+    #
+    # When OCR degrades the structured timestamp (e.g. "Fault 1/8 at 13:26"
+    # misread as "at ii8 M2 DOUB FAULT"), the timestamp regex above misses it.
+    # But the bare FAULT/FIRE keyword is almost always legible.
+    #
+    # Rule: device-code-shaped text in OCR  +  bare FAULT keyword  =  fault
+    #       device-code-shaped text in OCR  +  bare FIRE  keyword  =  fire
+    # Zero-count idle screens ("Fault(0)", "[Status]") are explicitly excluded.
+    _has_device_code = bool(
+        re.search(r"\bl\d\s+[a-z]\d{2,3}\b", text_lower)         # "l1 a053"
+        or re.search(r"\bl\d+[/\\]\d+\b", text_lower)              # "l1/53"
+        or re.search(r"\bmcp\s+[a-z]?\d{2,3}\b", text_lower)       # "mcp a103"
+        or re.search(r"\bdevice\b.*\bl\d\b", text_lower)           # "Device: ... L1"
+    )
+    if _has_device_code:
+        # Bare FAULT keyword present — NOT an idle zero-count screen
+        if (re.search(r"\bfault\b", text_lower)
+                and not re.search(r"\bfaults?\s*[\(\[]\s*0", text_lower)
+                and "[status]" not in text_lower):
+            return "fault"
+        # Bare FIRE keyword present — NOT an idle zero-count / banner-only screen
+        if (re.search(r"\bfire\b", text_lower)
+                and not _has_only_zero_count(text_lower, "fire")
+                and not re.search(r"\bfires?\s*[\(\[]\s*0", text_lower)):
+            return "fire"
+
+    # Line 3 active event resolution (structured timestamp patterns matched above)
     if has_active_fault and not has_active_fire:
         return "fault"
     if has_active_fire and not has_active_fault:
