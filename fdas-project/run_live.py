@@ -116,46 +116,72 @@ def _save_alert_state(state: dict | None):
         print(f"  [warn] Could not write alert state: {e}")
 
 
+# How long (seconds) before the same alert TYPE can trigger a new SMS/call.
+# OCR fluctuates between device codes for the same physical alarm, so we
+# suppress re-alerts of the same type within this cooldown window.
+# 1800s = 30 minutes. Increase if you still get spam; decrease for faster re-alert on new alarms.
+ALERT_COOLDOWN_SECONDS = 1800
+
+
 def is_duplicate_alert(message_type: str, alert_key: str, detected_zone: str = "") -> bool:
     """
     Check if the detected alert matches or is covered by the currently active alarm.
     Prevents OCR fluctuations from repeatedly spamming SMS and placing repetitive phone calls.
+
+    KEY FIX: OCR frequently misreads the same physical device code across cycles
+    (e.g. 'L1 A103' one frame, 'L1 I018' the next). An exact-key match alone is
+    not enough — we also apply a TIME-BASED COOLDOWN per alert type so that any
+    re-detection of the same type within ALERT_COOLDOWN_SECONDS is suppressed,
+    regardless of the OCR code variation.
     """
     active = _load_alert_state()
     if not active:
         return False
 
     active_type = active.get("message_type")
-    # If a fault is active and a fire breaks out, that is an escalation -> not duplicate
+    # Escalation: fault active → fire detected → always send (fire overrides fault)
     if active_type == "fault" and message_type == "fire":
         return False
+    # Suppression: fire active → fault detected → suppress fault chatter during fire
     if active_type == "fire" and message_type == "fault":
-        # While fire is active, suppress secondary fault chatter to avoid spamming
         return True
+    # Different type (and not the escalation case above) → allow through
     if active_type != message_type:
         return False
 
     active_key = active.get("key", "")
     active_zone = active.get("zone", "")
 
-    # If previous alert was generic ('UNKNOWN' or 'PANEL') and new frame detected a real device code:
-    # This is an UPGRADE with real location details, NOT a duplicate! Send the notification!
+    # ── Time-based cooldown (primary dedup gate) ──────────────────────────────
+    # Same alert TYPE was sent recently: suppress regardless of OCR code variation.
+    # This is the main fix for repeated SMS when OCR flickers between device codes.
+    try:
+        last_ts = datetime.fromisoformat(active.get("timestamp", ""))
+        elapsed = (datetime.now() - last_ts).total_seconds()
+        if elapsed < ALERT_COOLDOWN_SECONDS:
+            return True  # Same type, within cooldown window → suppress
+    except Exception:
+        pass  # If timestamp is malformed, fall through to key-based checks
+
+    # ── After cooldown: allow re-alert only for genuinely new location ────────
+    # If previous alert was generic ('UNKNOWN' or 'PANEL') and new frame has a
+    # real device code: send it (upgrade with real location details).
     if active_key in ("PANEL", "UNKNOWN", "") and alert_key not in ("PANEL", "UNKNOWN", ""):
         return False
 
-    # 1. Exact match on alert key
+    # 1. Exact match on alert key → still a duplicate
     if active_key == alert_key:
         return True
 
-    # 2. If an active alarm is already recorded, any generic / fallback detection
-    #    (e.g. 'PANEL', 'UNKNOWN', '') for the same alarm type is a duplicate.
+    # 2. Generic / fallback code when an active alarm is already recorded → duplicate
     if alert_key in ("PANEL", "UNKNOWN", ""):
         return True
 
-    # 3. If both have zones and they are the same zone
+    # 3. Same zone → duplicate (zone is more stable than OCR device code)
     if detected_zone and active_zone and detected_zone == active_zone:
         return True
 
+    # Cooldown expired + different key + different zone → treat as genuinely new alert
     return False
 
 
