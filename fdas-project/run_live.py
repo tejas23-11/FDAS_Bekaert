@@ -83,6 +83,13 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff"}
 _ALERT_STATE_FILE = INBOX_DIR / ".active_alert_state.json"
 _current_active_alert: dict | None = None
 
+# How many consecutive "normal" / "no device code" frames must be seen
+# before we clear the active alert state. The LCD panel rotates between
+# the alarm screen and the logo/idle screen every ~10-15 seconds, so a
+# single "normal" frame does NOT mean the alarm is over.
+_NORMAL_FRAMES_TO_CLEAR = 5
+_consecutive_normal_count = 0
+
 
 def _load_alert_state() -> dict | None:
     """Load the currently active alarm state from memory or persistent disk cache."""
@@ -504,11 +511,16 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False, is
     print(f"  [CODE EXTRACTED] code='{code}', zone='{detected_zone}'")
 
     if not code:
-        # No device code found → panel is likely on a status/idle screen.
-        # Clear any active alert if transitioning back to normal.
+        # No device code found → could be LCD rotating to logo/idle page,
+        # or genuinely back to normal. Count consecutive normal frames.
+        global _consecutive_normal_count
+        _consecutive_normal_count += 1
         if _load_alert_state():
-            print("  [FDAS] No device code detected. Panel likely returned to NORMAL. Cleared active alert state.")
-            clear_active_alert()
+            if _consecutive_normal_count >= _NORMAL_FRAMES_TO_CLEAR:
+                print(f"  [FDAS] {_consecutive_normal_count} consecutive normal frames. Panel returned to NORMAL. Clearing alert state.")
+                clear_active_alert()
+            else:
+                print(f"  [FDAS] No device code (frame {_consecutive_normal_count}/{_NORMAL_FRAMES_TO_CLEAR}). LCD may be cycling — keeping alert state.")
         print(f"┌{'─' * 66}┐")
         print(f"│  FDAS PANEL STATUS: ✅ NORMAL (No Device Code Detected)          │")
         print(f"├─────────────────────┬────────────────────────────────────────────┤")
@@ -526,9 +538,13 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False, is
     # Even with a device code present, if classifier says normal/unknown,
     # it means line 3 doesn't show an active Fire/Fault event.
     if message_type in ("normal", "unknown"):
+        _consecutive_normal_count += 1
         if _load_alert_state():
-            print("  [FDAS] Panel returned to NORMAL. Cleared active alert state.")
-            clear_active_alert()
+            if _consecutive_normal_count >= _NORMAL_FRAMES_TO_CLEAR:
+                print(f"  [FDAS] {_consecutive_normal_count} consecutive normal frames. Panel returned to NORMAL. Clearing alert state.")
+                clear_active_alert()
+            else:
+                print(f"  [FDAS] Normal/unknown frame {_consecutive_normal_count}/{_NORMAL_FRAMES_TO_CLEAR}. LCD may be cycling — keeping alert state.")
         status_label = "✅ NORMAL (All Clear)" if message_type == "normal" else f"ℹ️  {message_type.upper()}"
         print(f"┌{'─' * 66}┐")
         print(f"│  FDAS PANEL STATUS: {status_label:<44}│")
@@ -550,6 +566,9 @@ def process_image(image_path: Path, calibration: dict, dry_run: bool = False, is
 
     # Unique key for deduplicating repeated notifications across continuous frames
     alert_key = code
+
+    # Reset normal counter: we just saw a real alarm frame
+    _consecutive_normal_count = 0
 
     # ── Deduplication: Suppress repeated alerts for persistent active alarm ──
     if is_duplicate_alert(message_type, alert_key, detected_zone):
