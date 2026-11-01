@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=FDAS System
+GenericName=Fire Detection System
+Comment=Start or Stop the FDAS Fire Detection and Alarm System
+Exec=/home/pi/FDAS_Bekaert/fdas-project/fdas_toggle.sh
+Icon=/home/pi/FDAS_Bekaert/fdas-project/ui/static/fdas_icon.png
+Terminal=false
+Categories=Utility;System;
+StartupNotify=true
+Keywords=fire;alarm;fdas;detection;
+

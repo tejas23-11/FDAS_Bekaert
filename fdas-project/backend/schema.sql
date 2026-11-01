@@ -13,11 +13,11 @@ CREATE TABLE IF NOT EXISTS events (
     device_type     TEXT,
     contacts        TEXT,                   -- JSON array, resolved SMS contact group
     primary_contact TEXT,                   -- who gets the voice call (fire only)
-    status          TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'resolved'
+    status          TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'resolved' | 'duplicate'
     resolved_at     TEXT,
-    sms_status      TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sent' | 'failed' | 'escalated'
+    sms_status      TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sent' | 'failed' | 'escalated' | 'unknown'
     sms_attempts    INTEGER NOT NULL DEFAULT 0,
-    call_status     TEXT NOT NULL DEFAULT 'not_applicable'  -- 'not_applicable' | 'pending' | 'placed' | 'failed'
+    call_status     TEXT NOT NULL DEFAULT 'not_applicable'  -- 'not_applicable' | 'pending' | 'placed' | 'failed' | 'unknown'
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_device_status ON events(device_code, status);
@@ -49,7 +49,14 @@ CREATE INDEX IF NOT EXISTS idx_health_check ON system_health(check_name, checked
 -- the dashboard.  The pipeline checks these first; falls back to the
 -- per-device contacts in device_map if no global list is configured.
 CREATE TABLE IF NOT EXISTS notification_contacts (
-    list_type   TEXT PRIMARY KEY,             -- 'sms' | 'call'
-    contacts    TEXT NOT NULL DEFAULT '[]',   -- JSON array of phone numbers
+    list_type   TEXT PRIMARY KEY,             -- 'sms' | 'call' | 'test_sms' | 'test_call'
+    contacts    TEXT NOT NULL DEFAULT '[]',   -- JSON array of {"name":..., "phone":...} objects
     updated_at  TEXT                          -- ISO 8601 UTC
+);
+
+-- Key-value config store for runtime settings (test mode toggle, etc.)
+CREATE TABLE IF NOT EXISTS system_config (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  TEXT
 );

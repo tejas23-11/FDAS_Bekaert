@@ -3,8 +3,10 @@
 Accepts a .xlsx file, validates it via excel_parser, upserts valid rows
 into device_map, and shows a plain-English summary of what happened.
 
-Also provides separate management of global SMS and Call contact lists,
-stored in the notification_contacts table.
+Also provides separate management of:
+  - Global SMS and Call contact lists (name + phone format)
+  - Test SMS and Call contact lists (used when test mode is active)
+  - A test mode toggle (when on, notifications go to test contacts only)
 """
 
 from __future__ import annotations
@@ -36,8 +38,12 @@ def _fetch_devices() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def _fetch_contact_list(list_type: str) -> list[str]:
-    """Return the phone numbers for a given list_type ('sms' or 'call')."""
+def _fetch_contact_list(list_type: str) -> list[dict]:
+    """Return contacts for a given list_type as list of dicts with 'name' and 'phone'.
+
+    Handles both old format (plain string list) and new format (dict list)
+    for backward compatibility.
+    """
     conn = get_connection()
     row = conn.execute(
         "SELECT contacts FROM notification_contacts WHERE list_type = ?",
@@ -46,14 +52,27 @@ def _fetch_contact_list(list_type: str) -> list[str]:
     conn.close()
     if row:
         try:
-            return json.loads(row["contacts"])
+            raw = json.loads(row["contacts"])
+            if not isinstance(raw, list):
+                return []
+            result = []
+            for item in raw:
+                if isinstance(item, dict):
+                    result.append({
+                        "name": item.get("name", ""),
+                        "phone": item.get("phone", ""),
+                    })
+                else:
+                    # Migrate plain string to dict
+                    result.append({"name": "", "phone": str(item)})
+            return result
         except (json.JSONDecodeError, TypeError):
             return []
     return []
 
 
-def _save_contact_list(list_type: str, contacts: list[str]) -> None:
-    """Upsert the phone number list for SMS or Call."""
+def _save_contact_list(list_type: str, contacts: list[dict]) -> None:
+    """Upsert the contact list (name+phone dicts) for a given list_type."""
     conn = get_connection()
     conn.execute(
         "INSERT INTO notification_contacts (list_type, contacts, updated_at) "
@@ -65,14 +84,62 @@ def _save_contact_list(list_type: str, contacts: list[str]) -> None:
     conn.close()
 
 
-def _parse_phone_numbers(raw: str) -> list[str]:
-    """Parse a textarea of phone numbers (one per line or comma-separated)."""
-    numbers = []
-    for line in raw.replace(",", "\n").splitlines():
-        num = "".join(c for c in line.strip() if c.isdigit() or c == "+")
-        if num:
-            numbers.append(num)
-    return numbers
+def _parse_contacts(raw: str) -> list[dict]:
+    """Parse a textarea of contacts into a list of {name, phone} dicts.
+
+    Supported input formats (one per line or comma-separated):
+        Name: +91XXXXXXXXXX
+        Name, +91XXXXXXXXXX
+        +91XXXXXXXXXX          (name left blank)
+    """
+    contacts = []
+    for line in raw.replace("\r", "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        name = ""
+        phone_raw = line
+
+        # Try "Name: +91..." or "Name, +91..."
+        for sep in (":", ","):
+            if sep in line:
+                parts = line.split(sep, 1)
+                candidate_name = parts[0].strip()
+                candidate_phone = parts[1].strip()
+                # Make sure right side looks like a phone number
+                digits = [c for c in candidate_phone if c.isdigit()]
+                if len(digits) >= 7:
+                    name = candidate_name
+                    phone_raw = candidate_phone
+                    break
+
+        phone = "".join(c for c in phone_raw if c.isdigit() or c == "+")
+        if phone:
+            contacts.append({"name": name, "phone": phone})
+    return contacts
+
+
+def _get_test_mode() -> str:
+    """Return 'on' or 'off' from system_config."""
+    try:
+        conn = get_connection()
+        row = conn.execute("SELECT value FROM system_config WHERE key = 'test_mode'").fetchone()
+        conn.close()
+        return row["value"] if row else "off"
+    except Exception:
+        return "off"
+
+
+def _set_test_mode(value: str) -> None:
+    """Set test_mode in system_config to 'on' or 'off'."""
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO system_config (key, value, updated_at) VALUES ('test_mode', ?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        (value, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+    conn.close()
 
 
 # ── Routes ───────────────────────────────────────────────────────────
@@ -80,16 +147,21 @@ def _parse_phone_numbers(raw: str) -> list[str]:
 @upload_bp.route("/upload", methods=["GET"])
 @login_required
 def index():
-    # Fetch the current device map for display.
     devices = _fetch_devices()
     sms_contacts = _fetch_contact_list("sms")
     call_contacts = _fetch_contact_list("call")
+    test_sms_contacts = _fetch_contact_list("test_sms")
+    test_call_contacts = _fetch_contact_list("test_call")
+    test_mode = _get_test_mode()
 
     return render_template(
         "upload.html",
         devices=devices,
         sms_contacts=sms_contacts,
         call_contacts=call_contacts,
+        test_sms_contacts=test_sms_contacts,
+        test_call_contacts=test_call_contacts,
+        test_mode=test_mode,
     )
 
 
@@ -114,9 +186,11 @@ def upload():
         tmp_path = tmp.name
 
     try:
-        # Use current global SMS contacts as default for new devices
-        global_contacts = _fetch_contact_list("sms") or ["+919545202660", "+919730814745", "+919561515546", "+919172319233"]
-        result = parse_device_map(tmp_path, default_contacts=global_contacts)
+        # Use current global SMS contact phones as default for new devices
+        global_contacts_dicts = _fetch_contact_list("sms")
+        global_phones = [c["phone"] for c in global_contacts_dicts] or \
+                        ["+919545202660", "+919730814745", "+919561515546", "+919172319233"]
+        result = parse_device_map(tmp_path, default_contacts=global_phones)
     except ValueError as e:
         flash(f"Invalid file: {e}", "error")
         return redirect(url_for("upload.index"))
@@ -157,7 +231,9 @@ def upload():
         # Save an active copy to hardware/device_map.csv for template download & reference
         csv_out = Path(__file__).resolve().parent.parent.parent / "hardware" / "device_map.csv"
         csv_out.parent.mkdir(parents=True, exist_ok=True)
-        all_canonical = conn.execute("SELECT device_code, location_name FROM device_map WHERE device_code LIKE 'L% A%' ORDER BY device_code").fetchall()
+        all_canonical = conn.execute(
+            "SELECT device_code, location_name FROM device_map WHERE device_code LIKE 'L% A%' ORDER BY device_code"
+        ).fetchall()
         with open(str(csv_out), "w", encoding="utf-8", newline="") as cf:
             writer = csv.writer(cf)
             writer.writerow(["Sr. No.", "ID", "Location"])
@@ -191,6 +267,9 @@ def upload():
         devices=_fetch_devices(),
         sms_contacts=_fetch_contact_list("sms"),
         call_contacts=_fetch_contact_list("call"),
+        test_sms_contacts=_fetch_contact_list("test_sms"),
+        test_call_contacts=_fetch_contact_list("test_call"),
+        test_mode=_get_test_mode(),
         upload_done=True,
         updated=updated,
         errors=error_details,
@@ -216,20 +295,56 @@ def download_template():
 @upload_bp.route("/upload/sms-contacts", methods=["POST"])
 @login_required
 def update_sms_contacts():
-    """Save the global SMS notification contact list."""
+    """Save the global SMS notification contact list (production)."""
     raw = request.form.get("sms_contacts", "")
-    numbers = _parse_phone_numbers(raw)
-    _save_contact_list("sms", numbers)
-    flash(f"SMS contact list updated — {len(numbers)} number(s) saved.", "success")
+    contacts = _parse_contacts(raw)
+    _save_contact_list("sms", contacts)
+    flash(f"SMS contact list updated — {len(contacts)} number(s) saved.", "success")
     return redirect(url_for("upload.index"))
 
 
 @upload_bp.route("/upload/call-contacts", methods=["POST"])
 @login_required
 def update_call_contacts():
-    """Save the global Call notification contact list."""
+    """Save the global Call notification contact list (production)."""
     raw = request.form.get("call_contacts", "")
-    numbers = _parse_phone_numbers(raw)
-    _save_contact_list("call", numbers)
-    flash(f"Call contact list updated — {len(numbers)} number(s) saved.", "success")
+    contacts = _parse_contacts(raw)
+    _save_contact_list("call", contacts)
+    flash(f"Call contact list updated — {len(contacts)} number(s) saved.", "success")
+    return redirect(url_for("upload.index"))
+
+
+@upload_bp.route("/upload/test-sms-contacts", methods=["POST"])
+@login_required
+def update_test_sms_contacts():
+    """Save the test SMS contact list (used when test mode is active)."""
+    raw = request.form.get("test_sms_contacts", "")
+    contacts = _parse_contacts(raw)
+    _save_contact_list("test_sms", contacts)
+    flash(f"Test SMS contact list updated — {len(contacts)} number(s) saved.", "success")
+    return redirect(url_for("upload.index"))
+
+
+@upload_bp.route("/upload/test-call-contacts", methods=["POST"])
+@login_required
+def update_test_call_contacts():
+    """Save the test Call contact list (used when test mode is active)."""
+    raw = request.form.get("test_call_contacts", "")
+    contacts = _parse_contacts(raw)
+    _save_contact_list("test_call", contacts)
+    flash(f"Test Call contact list updated — {len(contacts)} number(s) saved.", "success")
+    return redirect(url_for("upload.index"))
+
+
+@upload_bp.route("/upload/test-mode", methods=["POST"])
+@login_required
+def toggle_test_mode():
+    """Toggle test mode on or off."""
+    current = _get_test_mode()
+    new_value = "off" if current == "on" else "on"
+    _set_test_mode(new_value)
+    if new_value == "on":
+        flash("⚠️ TEST MODE ENABLED — Notifications will go to test contacts only.", "warning")
+    else:
+        flash("✅ Test mode disabled — Notifications going to production contacts.", "success")
     return redirect(url_for("upload.index"))

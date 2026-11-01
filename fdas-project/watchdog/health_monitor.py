@@ -8,6 +8,12 @@ cv/capture.py touches HEARTBEAT_FILE every frame cycle when heartbeat=True
 
 Extended (step 14): each check result is now persisted to the system_health
 table so the operator dashboard can display a live status banner.
+
+Feature 5 extension: GSM signal strength is polled via AT+CSQ every ~30s
+and stored as a 'gsm_signal' health check.
+
+Feature 4 extension: stale 'active' events older than 24h are auto-resolved
+every ~8 minutes.
 """
 
 from __future__ import annotations
@@ -53,6 +59,25 @@ def _prune_old_checks(check_name: str):
     conn.close()
 
 
+def _auto_resolve_stale_events():
+    """Auto-resolve events stuck in 'active' status for more than 24 hours."""
+    from backend.db import get_connection
+    try:
+        conn = get_connection()
+        now = datetime.now(timezone.utc).isoformat()
+        result = conn.execute(
+            "UPDATE events SET status = 'resolved', resolved_at = ? "
+            "WHERE status = 'active' AND detected_at < datetime('now', '-24 hours')",
+            (now,)
+        )
+        if result.rowcount > 0:
+            print(f"[watchdog] Auto-resolved {result.rowcount} stale active event(s)")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[watchdog] Could not auto-resolve stale events: {e}")
+
+
 def check_heartbeat(max_age_seconds: float = MAX_HEARTBEAT_AGE_SECONDS) -> bool:
     if not HEARTBEAT_FILE.exists():
         return False
@@ -94,6 +119,58 @@ def check_process_alive(process_names: tuple[str, ...] = ("cv.capture", "run_liv
         if any(p in cmdline for p in process_names):
             return True
     return False
+
+
+def check_gsm_signal() -> tuple[str, int | None, str]:
+    """
+    Query GSM module signal strength via AT+CSQ.
+
+    Returns:
+        (status, rssi_value, detail_string)
+        status: 'ok' | 'fault'
+        rssi_value: 0-31 integer, or None if unreadable
+        detail_string: human-readable description
+
+    AT+CSQ RSSI values:
+        0       = -113 dBm or less (no signal)
+        1       = -111 dBm
+        2-9     = Marginal
+        10-14   = OK
+        15-19   = Good
+        20-31   = Excellent
+        99      = Not known / not detectable
+    """
+    try:
+        from notify.gsm_config import get_serial_connection
+        ser = get_serial_connection()
+        try:
+            ser.write(b"AT+CSQ\r\n")
+            time.sleep(0.6)
+            resp = ser.read(ser.in_waiting or 64).decode(errors="replace")
+        finally:
+            ser.close()
+
+        for line in resp.splitlines():
+            if "+CSQ:" in line:
+                try:
+                    rssi = int(line.split(":")[1].split(",")[0].strip())
+                except (ValueError, IndexError):
+                    continue
+                if rssi == 99:
+                    return ("fault", None, "Signal not detectable — check antenna")
+                elif rssi == 0:
+                    return ("fault", 0, "No signal (0/31)")
+                elif rssi < 10:
+                    return ("fault", rssi, f"Weak signal ({rssi}/31)")
+                elif rssi < 15:
+                    return ("ok", rssi, f"Signal OK ({rssi}/31)")
+                elif rssi < 20:
+                    return ("ok", rssi, f"Good signal ({rssi}/31)")
+                else:
+                    return ("ok", rssi, f"Excellent signal ({rssi}/31)")
+        return ("fault", None, "No CSQ response from modem")
+    except Exception as e:
+        return ("fault", None, f"GSM check error: {e}")
 
 
 def raise_fault_alert(reason: str):
@@ -141,11 +218,19 @@ def run(iterations: int | None = None, persist: bool = True):
             _record_health("process", "ok" if proc_ok else "fault",
                            None if proc_ok else "Pipeline process not running")
 
-        # Prune old rows periodically (every 100 cycles ≈ ~8 min at 5s interval)
+        # --- GSM signal check (every 6 cycles ≈ 30s to avoid port contention) ---
+        if count % 6 == 0:
+            gsm_status, rssi, gsm_detail = check_gsm_signal()
+            if persist:
+                _record_health("gsm_signal", gsm_status, gsm_detail)
+
+        # Prune old rows + auto-resolve stale events (every 100 cycles ≈ ~8 min at 5s interval)
         if persist and count > 0 and count % 100 == 0:
             _prune_old_checks("heartbeat")
             _prune_old_checks("camera")
             _prune_old_checks("process")
+            _prune_old_checks("gsm_signal")
+            _auto_resolve_stale_events()
 
         time.sleep(CHECK_INTERVAL_SECONDS)
         count += 1

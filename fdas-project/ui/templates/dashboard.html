@@ -11,7 +11,20 @@
     <p>Live health status and recent activity</p>
 </div>
 
-<!-- Health Banner -->
+{# ── Feature 3: Test Mode Warning Banner ──────────────────────────── #}
+{% if test_mode == 'on' %}
+<div class="health-banner" style="background: linear-gradient(135deg, #b45309, #92400e); border-color: #f59e0b;">
+    <span class="icon">🧪</span>
+    <div>
+        <div style="font-weight: 700;">TEST MODE ACTIVE</div>
+        <div class="detail">All SMS &amp; calls are going to <strong>test contacts only</strong> — not production contacts.
+            <a href="{{ url_for('upload.index') }}" style="color: #fef3c7; text-decoration: underline; margin-left: 8px;">Manage →</a>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{# ── Health Banner ─────────────────────────────────────────────────── #}
 {% if banner == "healthy" %}
 <div class="health-banner healthy">
     <span class="icon">✅</span>
@@ -38,17 +51,44 @@
 </div>
 {% endif %}
 
-<!-- Individual Health Cards -->
+{# ── Feature 5: Individual Health Cards (includes GSM signal) ─────── #}
 {% if health_checks %}
 <div class="health-grid">
     {% for check in health_checks %}
     <div class="health-card">
         <div class="indicator {{ check.status }}"></div>
         <div class="info">
+            {% if check.check_name == 'gsm_signal' %}
+            <div class="check-name">📶 GSM Signal</div>
+            {% elif check.check_name == 'heartbeat' %}
+            <div class="check-name">💓 Heartbeat</div>
+            {% elif check.check_name == 'camera' %}
+            <div class="check-name">📷 Camera</div>
+            {% elif check.check_name == 'process' %}
+            <div class="check-name">⚙️ Pipeline</div>
+            {% else %}
             <div class="check-name">{{ check.check_name }}</div>
+            {% endif %}
             <div class="check-time">{{ check.checked_at[:19] | replace("T", " ") }}</div>
             {% if check.detail %}
-            <div class="check-time" style="color: var(--red);">{{ check.detail }}</div>
+            <div class="check-time" style="color: {% if check.status == 'ok' %}var(--green){% else %}var(--red){% endif %};">
+                {{ check.detail }}
+            </div>
+            {% endif %}
+            {# Signal strength bar for GSM #}
+            {% if check.check_name == 'gsm_signal' %}
+            <div class="signal-bar" title="{{ check.detail or 'No data' }}">
+                {% if check.gsm_rssi is not none %}
+                    {% set rssi = check.gsm_rssi %}
+                    {% set bars = 4 if rssi >= 20 else (3 if rssi >= 15 else (2 if rssi >= 10 else 1)) %}
+                    {% for i in range(4) %}
+                    <div class="bar{% if i >= bars %} inactive{% endif %}"
+                         style="height: {{ (i + 1) * 5 }}px;"></div>
+                    {% endfor %}
+                {% else %}
+                    <span style="color: var(--red); font-size: 0.75rem;">✗</span>
+                {% endif %}
+            </div>
             {% endif %}
         </div>
         <span class="badge badge-{{ check.status }}">{{ check.status }}</span>
@@ -57,7 +97,7 @@
 </div>
 {% endif %}
 
-<!-- Recent Events -->
+{# ── Feature 2: Recent Events — simplified to Device ID & Location ── #}
 <div class="card">
     <div class="card-header">
         <span class="card-title">Recent Events</span>
@@ -72,12 +112,8 @@
             <thead>
                 <tr>
                     <th>Time</th>
-                    <th>Device</th>
+                    <th>Device ID</th>
                     <th>Location</th>
-                    <th>Type</th>
-                    <th>Status</th>
-                    <th>SMS</th>
-                    <th>Call</th>
                 </tr>
             </thead>
             <tbody>
@@ -86,12 +122,10 @@
                     <td style="font-family: var(--font-mono); font-size: 0.8rem;">
                         {{ e.detected_at[:19] | replace("T", " ") }}
                     </td>
-                    <td style="font-weight: 600; color: var(--text-primary);">{{ e.device_code }}</td>
+                    <td style="font-weight: 600; color: var(--text-primary); font-family: var(--font-mono);">
+                        {{ e.device_code }}
+                    </td>
                     <td>{{ e.location_name or '—' }}</td>
-                    <td><span class="badge badge-{{ e.message_type }}">{{ e.message_type }}</span></td>
-                    <td><span class="badge badge-{{ e.status }}">{{ e.status }}</span></td>
-                    <td><span class="badge badge-{{ e.sms_status }}">{{ e.sms_status }}</span></td>
-                    <td><span class="badge badge-{{ e.call_status }}">{{ e.call_status }}</span></td>
                 </tr>
                 {% endfor %}
             </tbody>

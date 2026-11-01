@@ -26,7 +26,103 @@
 {% endif %}
 
 <!-- ═══════════════════════════════════════════════════════════════════
-     Notification Contact Lists — SMS & Call
+     Feature 3: Testing Mode Toggle
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card" style="margin-bottom: 28px; border: 2px solid {% if test_mode == 'on' %}#f59e0b{% else %}var(--border){% endif %};">
+    <div class="card-header">
+        <span class="card-title">
+            🧪 Testing Mode
+            <span class="badge {% if test_mode == 'on' %}badge-fire{% else %}badge-resolved{% endif %}" style="margin-left: 10px;">
+                {{ 'ACTIVE' if test_mode == 'on' else 'OFF' }}
+            </span>
+        </span>
+        <form method="POST" action="{{ url_for('upload.toggle_test_mode') }}" style="display:inline;">
+            <button type="submit" class="btn {% if test_mode == 'on' %}btn-call{% else %}btn-sms{% endif %}">
+                {% if test_mode == 'on' %}
+                    ✅ Disable Test Mode
+                {% else %}
+                    🧪 Enable Test Mode
+                {% endif %}
+            </button>
+        </form>
+    </div>
+    <p class="contact-description" style="margin: 12px 0 0;">
+        {% if test_mode == 'on' %}
+        <strong style="color: var(--orange);">⚠️ Test mode is ACTIVE.</strong>
+        All SMS messages and voice calls are currently going to the <strong>test contacts below only</strong>.
+        Production contacts will not receive any alerts. Disable test mode when commissioning is complete.
+        {% else %}
+        When test mode is enabled, all SMS and voice calls go <strong>only to the test contacts</strong> listed below —
+        production contacts are bypassed. Use this for testing and commissioning.
+        {% endif %}
+    </p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     Feature 3: Test Contact Lists (SMS Test & Call Test)
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="contact-lists-grid" style="margin-bottom: 28px;">
+
+    <!-- SMS Test Contacts -->
+    <div class="card contact-card" style="border: 1px solid #92400e;">
+        <div class="card-header">
+            <span class="card-title"><span class="contact-icon sms-icon">📱</span> SMS Test List</span>
+            <span class="card-subtitle">{{ test_sms_contacts|length }} number(s)</span>
+        </div>
+        <p class="contact-description">
+            During <strong>test mode</strong>, SMS alerts go to these numbers <em>instead of</em> production contacts.
+        </p>
+        <form method="POST" action="{{ url_for('upload.update_test_sms_contacts') }}">
+            <div class="contact-input-wrapper">
+                <textarea
+                    name="test_sms_contacts"
+                    class="contact-textarea"
+                    placeholder="Format: Name: +91XXXXXXXXXX&#10;e.g.&#10;Tester Tejas: +91 98765 43210&#10;Tester Ramesh: +91 87654 32109"
+                    rows="5"
+                >{% for c in test_sms_contacts %}{{ c.name }}{% if c.name %}: {% endif %}{{ c.phone }}{% if not loop.last %}
+{% endif %}{% endfor %}</textarea>
+            </div>
+            <div class="contact-actions">
+                <span class="contact-hint">Format: Name: +91XXXXXXXXXX (one per line)</span>
+                <button type="submit" class="btn btn-sms">
+                    <span class="btn-icon">📱</span> Update SMS Test List
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Call Test Contacts -->
+    <div class="card contact-card" style="border: 1px solid #92400e;">
+        <div class="card-header">
+            <span class="card-title"><span class="contact-icon call-icon">📲</span> Call Test List</span>
+            <span class="card-subtitle">{{ test_call_contacts|length }} number(s)</span>
+        </div>
+        <p class="contact-description">
+            During <strong>test mode</strong>, voice call alerts go to these numbers <em>instead of</em> production contacts.
+        </p>
+        <form method="POST" action="{{ url_for('upload.update_test_call_contacts') }}">
+            <div class="contact-input-wrapper">
+                <textarea
+                    name="test_call_contacts"
+                    class="contact-textarea"
+                    placeholder="Format: Name: +91XXXXXXXXXX&#10;e.g.&#10;Tester Tejas: +91 98765 43210"
+                    rows="5"
+                >{% for c in test_call_contacts %}{{ c.name }}{% if c.name %}: {% endif %}{{ c.phone }}{% if not loop.last %}
+{% endif %}{% endfor %}</textarea>
+            </div>
+            <div class="contact-actions">
+                <span class="contact-hint">Format: Name: +91XXXXXXXXXX (one per line)</span>
+                <button type="submit" class="btn btn-call">
+                    <span class="btn-icon">📲</span> Update Call Test List
+                </button>
+            </div>
+        </form>
+    </div>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     Feature 1: Production Notification Contact Lists (Name + Number)
      ═══════════════════════════════════════════════════════════════════ -->
 <div class="contact-lists-grid">
 
@@ -37,7 +133,8 @@
             <span class="card-subtitle">{{ sms_contacts|length }} number(s)</span>
         </div>
         <p class="contact-description">
-            These phone numbers will receive <strong>SMS notifications</strong> for all alert types (fire, fault, supervisory).
+            These contacts receive <strong>SMS notifications</strong> for all alert types (fire, fault, supervisory).
+            Format each line as <code>Name: +91XXXXXXXXXX</code>.
         </p>
         <form method="POST" action="{{ url_for('upload.update_sms_contacts') }}">
             <div class="contact-input-wrapper">
@@ -45,18 +142,34 @@
                     name="sms_contacts"
                     id="sms-contacts-input"
                     class="contact-textarea"
-                    placeholder="Enter phone numbers (one per line)&#10;e.g.&#10;+91 98765 43210&#10;+91 87654 32109"
-                    rows="5"
-                >{% for num in sms_contacts %}{{ num }}{% if not loop.last %}
+                    placeholder="Format: Name: +91XXXXXXXXXX&#10;e.g.&#10;Mr. Patil: +91 98765 43210&#10;Mr. Sharma: +91 87654 32109"
+                    rows="6"
+                >{% for c in sms_contacts %}{{ c.name }}{% if c.name %}: {% endif %}{{ c.phone }}{% if not loop.last %}
 {% endif %}{% endfor %}</textarea>
             </div>
             <div class="contact-actions">
-                <span class="contact-hint">One number per line or comma-separated</span>
+                <span class="contact-hint">Format: Name: +91XXXXXXXXXX (one per line)</span>
                 <button type="submit" class="btn btn-sms" id="save-sms-btn">
                     <span class="btn-icon">💬</span> Update SMS List
                 </button>
             </div>
         </form>
+        <!-- Current contacts display -->
+        {% if sms_contacts %}
+        <div style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px;">
+            <table style="width:100%; font-size: 0.82rem;">
+                <thead><tr><th>Name</th><th>Phone</th></tr></thead>
+                <tbody>
+                {% for c in sms_contacts %}
+                <tr>
+                    <td>{{ c.name or '—' }}</td>
+                    <td style="font-family: var(--font-mono);">{{ c.phone }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
     </div>
 
     <!-- Call Contacts -->
@@ -66,7 +179,8 @@
             <span class="card-subtitle">{{ call_contacts|length }} number(s)</span>
         </div>
         <p class="contact-description">
-            These phone numbers will receive a <strong>voice call alert</strong> (ring-only, no audio) for <strong>fire events only</strong>.
+            These contacts receive a <strong>voice call alert</strong> (ring-only, no audio) for <strong>fire events only</strong>.
+            Format each line as <code>Name: +91XXXXXXXXXX</code>.
         </p>
         <form method="POST" action="{{ url_for('upload.update_call_contacts') }}">
             <div class="contact-input-wrapper">
@@ -74,18 +188,34 @@
                     name="call_contacts"
                     id="call-contacts-input"
                     class="contact-textarea"
-                    placeholder="Enter phone numbers (one per line)&#10;e.g.&#10;+91 98765 43210"
-                    rows="5"
-                >{% for num in call_contacts %}{{ num }}{% if not loop.last %}
+                    placeholder="Format: Name: +91XXXXXXXXXX&#10;e.g.&#10;Mr. Patil: +91 98765 43210"
+                    rows="6"
+                >{% for c in call_contacts %}{{ c.name }}{% if c.name %}: {% endif %}{{ c.phone }}{% if not loop.last %}
 {% endif %}{% endfor %}</textarea>
             </div>
             <div class="contact-actions">
-                <span class="contact-hint">One number per line or comma-separated</span>
+                <span class="contact-hint">Format: Name: +91XXXXXXXXXX (one per line)</span>
                 <button type="submit" class="btn btn-call" id="save-call-btn">
                     <span class="btn-icon">📞</span> Update Call List
                 </button>
             </div>
         </form>
+        <!-- Current contacts display -->
+        {% if call_contacts %}
+        <div style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px;">
+            <table style="width:100%; font-size: 0.82rem;">
+                <thead><tr><th>Name</th><th>Phone</th></tr></thead>
+                <tbody>
+                {% for c in call_contacts %}
+                <tr>
+                    <td>{{ c.name or '—' }}</td>
+                    <td style="font-family: var(--font-mono);">{{ c.phone }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
     </div>
 
 </div>
@@ -93,7 +223,7 @@
 <!-- ═══════════════════════════════════════════════════════════════════
      Device Map Upload
      ═══════════════════════════════════════════════════════════════════ -->
-<div class="card" style="margin-bottom: 28px;">
+<div class="card" style="margin-bottom: 28px; margin-top: 28px;">
     <div class="card-header">
         <span class="card-title">Upload Device Map</span>
         <a href="{{ url_for('upload.download_template') }}" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.8rem;">

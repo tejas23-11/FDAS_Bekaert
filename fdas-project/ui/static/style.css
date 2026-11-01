@@ -750,3 +750,21 @@ tr:hover td { background: var(--bg-card-hover); }
         grid-template-columns: 1fr;
     }
 }
+
+/* ── Feature 5: GSM Signal Strength Bar ─────────────────────────── */
+.signal-bar {
+    display: flex;
+    gap: 3px;
+    align-items: flex-end;
+    height: 22px;
+    margin-top: 4px;
+}
+.signal-bar .bar {
+    width: 5px;
+    background: var(--green);
+    border-radius: 2px;
+    transition: background 0.3s;
+}
+.signal-bar .bar.inactive {
+    background: var(--border);
+}

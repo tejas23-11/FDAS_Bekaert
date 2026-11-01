@@ -8,17 +8,36 @@ from cv.event import DetectedEvent, ResolvedEvent
 from backend.db import get_connection
 
 
+def _is_test_mode() -> bool:
+    """Return True if test mode is currently enabled in system_config."""
+    try:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT value FROM system_config WHERE key = 'test_mode'"
+        ).fetchone()
+        conn.close()
+        return row is not None and row["value"] == "on"
+    except Exception:
+        return False
+
+
 def _get_global_contacts(list_type: str) -> list[str]:
     """Fetch the global contact list from notification_contacts table.
+
+    When test mode is active, automatically uses the test contact list
+    ('test_sms' or 'test_call') instead of the production list.
 
     Filters out junk entries (short strings, dicts from old format) so only
     real phone numbers (>=10 digits) are returned.
     Returns an empty list if no global list is configured.
     """
+    # Route to test contacts when test mode is on
+    effective_type = f"test_{list_type}" if _is_test_mode() else list_type
+
     conn = get_connection()
     row = conn.execute(
         "SELECT contacts FROM notification_contacts WHERE list_type = ?",
-        (list_type,),
+        (effective_type,),
     ).fetchone()
     conn.close()
     if row:
@@ -98,6 +117,7 @@ def resolve_location(event: DetectedEvent) -> ResolvedEvent | None:
 
     Contact resolution priority:
       1. Global notification_contacts table (if configured via the dashboard)
+         → When test mode is active, test_sms / test_call lists are used instead.
       2. Per-device contacts from device_map (fallback)
 
     The first entry in the SMS contacts list is used as the primary_contact
@@ -139,6 +159,7 @@ def resolve_location(event: DetectedEvent) -> ResolvedEvent | None:
         return None
 
     # Resolve contacts: global list takes priority over per-device
+    # (_get_global_contacts automatically uses test lists when test mode is on)
     global_sms = _get_global_contacts("sms")
     global_call = _get_global_contacts("call")
     device_contacts = json.loads(row["contacts"])
