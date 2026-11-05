@@ -98,7 +98,18 @@ def check_camera_feed(device_index: int = 0) -> bool:
         if p.exists() and (time.time() - p.stat().st_mtime) <= MAX_HEARTBEAT_AGE_SECONDS:
             return True
 
-    # Pipeline isn't running — try direct camera access as last resort
+    # Pipeline isn't running — try checking camera tool directly (Pi camera / Arducam)
+    import shutil
+    import subprocess
+    cam_tool = "rpicam-still" if shutil.which("rpicam-still") else ("libcamera-still" if shutil.which("libcamera-still") else None)
+    if cam_tool:
+        try:
+            res = subprocess.run([cam_tool, "--list-cameras"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=4)
+            return res.returncode == 0 and b"available" in res.stdout.lower()
+        except Exception:
+            return False
+
+    # Otherwise fallback to OpenCV for standard USB webcams
     try:
         import cv2
         cap = cv2.VideoCapture(device_index)

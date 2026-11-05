@@ -49,10 +49,21 @@ stop_fdas() {
     done
     
     # Also kill by process name (safety net)
-    pkill -f "cv.capture" 2>/dev/null || true
+    pkill -f "run_monitor.sh" 2>/dev/null || true
     pkill -f "run_live" 2>/dev/null || true
+    pkill -f "cv.capture" 2>/dev/null || true
+    pkill -f "rpicam-still" 2>/dev/null || true
+    pkill -f "libcamera-still" 2>/dev/null || true
     pkill -f "watchdog.health_monitor" 2>/dev/null || true
     pkill -f "ui.app" 2>/dev/null || true
+    pkill -f "false_alarm_button" 2>/dev/null || true
+
+    # Force kill (-9) if anything remains stuck on camera/serial hardware
+    sleep 0.5
+    pkill -9 -f "run_monitor.sh|run_live|cv.capture|rpicam-still|libcamera-still" 2>/dev/null || true
+
+    # Clean temporary RAM buffers and locks
+    rm -f /dev/shm/live_cam.jpg /dev/shm/fdas_live.jpg /tmp/fdas_gsm.lock 2>/dev/null || true
     
     echo "[FDAS] All services stopped."
 }
@@ -98,9 +109,9 @@ echo "  Time: $(date)"
 echo "============================================="
 echo ""
 
-# 1. Detection Pipeline (camera-based)
+# 1. Detection Pipeline (camera-based, continuous in-memory runner)
 echo "[FDAS] Starting detection pipeline..."
-python3 -m cv.capture --source 0 $DRY_RUN \
+python3 run_live.py --live --interval 3 $DRY_RUN \
     >> "$LOG_DIR/pipeline.log" 2>&1 &
 PIPELINE_PID=$!
 echo "$PIPELINE_PID" > "$PID_DIR/pipeline.pid"
